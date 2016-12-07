@@ -1,18 +1,6 @@
 set hl=vb,Vb,lb,ib
 
 let cmds = []
-call add(cmds, "/class Binary$%Aclass Literal extends Ast {Literal(this.str);String str;}v%0")
-call add(cmds, "/class Lite$%A// A series of terms matched one after the other.class Alternative extends BinaryAst{Alternative(Ast l, Ast r) : super(l, r);}v%0k")
-call add(cmds, "/class Alter$%A// A series of alternatives separated by '|'.class Disjunction extends BinaryAst{Disjunction(Ast l, Ast r) : super(l, r);}v%0k")
-call add(cmds, "/class Alt$%Aclass EmptyAlternative extends Ast {}v0")
-
-call add(cmds, "/String curreAAst parseAtom() {if (accept(\"(\")) {Ast ast = parseDisjunction();expect(\")\");return ast;}if (current == \"|\" || current == \")\" || current == \"\") return null;Ast ast = new Literal(current);accept(current);return ast;}v%0")
-call add(cmds, "/Ast parseAtom$%15j15kAAst parseTerm() {Ast ast = parseAtom();if (ast == null) return null;if (accept(\"?\")) return new Disjunction(ast, new EmptyAlternative());return ast;}v%0")
-call add(cmds, "/Ast parseTerm$%15j15kAAst parseAlternative() {Ast ast = parseTerm();if (ast == null) return new EmptyAlternative();while (true) {Ast next = parseTerm();if (next == null) return ast;ast = new Alternative(ast, next);}}v%0")
-call add(cmds, "/Ast parseAlter$%10j10kAAst parseDisjunction() {Ast ast = parseAlternative();while (accept(\"|\")) {ast = new Disjunction(ast, parseAlternative());}return ast;}v%0")
-call add(cmds, "/String curre10j10kAAst parse() {getToken();Ast ast = parseDisjunction();expect(\"\");return ast;}v%0")
-
-call add(cmds, "/new ParserAAst ast = parser.parse();VV")
 
 call add(cmds, "/class Astf{aOstatic int ctr = 0;String name = \"f${ctr++}\";void dump() {print('\"$name\" [label=\"$this\"];');}Vkkkkk0")
 call add(cmds, "/  BinaryAstjAvoid dump() {print('\"$name\" [label=\"$this\"];');print('\"$name\" -> \"${l.name}\";');print('\"$name\" -> \"${r.name}\";');l.dump();r.dump();}v%0")
