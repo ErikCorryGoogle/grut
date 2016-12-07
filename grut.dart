@@ -1,25 +1,48 @@
-class Ast {}
+class Ast {
+  static int ctr = 0;
+  String name = "f${ctr++}";
+
+  void dump() {
+    print('"$name" [label="$this"];');
+  }
+}
 
 class BinaryAst extends Ast {
   BinaryAst(this.l, this.r);
   Ast l, r;
+
+  void dump() {
+    print('"$name" [label="$this"];');
+    print('"$name" -> "${l.name}";');
+    print('"$name" -> "${r.name}";');
+    l.dump();
+    r.dump();
+  }
 }
 
 class Literal extends Ast {
   Literal(this.str);
   String str;
+
+  String toString() => str;
 }
 
 // A series of terms matched one after the other.
 class Alternative extends BinaryAst{
   Alternative(Ast l, Ast r) : super(l, r);
+
+  String toString() => "($l$r)";
 }
 
-class EmptyAlternative extends Ast {}
+class EmptyAlternative extends Ast {
+  String toString() => "";
+}
 
 // A series of alternatives separated by '|'.
 class Disjunction extends BinaryAst{
   Disjunction(Ast l, Ast r) : super(l, r);
+
+  String toString() => "($l|$r)";
 }
 
 class Parser {
@@ -94,5 +117,8 @@ class Parser {
 int main() {
   Parser parser = new Parser("ab?c");
   Ast ast = parser.parse();
+  print("Digraph G {");
+  ast.dump();
+  print("}");
   return 0;
 }
