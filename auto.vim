@@ -1,12 +1,6 @@
 set hl=vb,Vb,lb,ib
 
 let cmds = []
-call add(cmds, "/String srcAint pos = 0;String current;vk0")
-call add(cmds, "/^class$%Ovoid getToken() {if (pos == src.length)current = \"\";elsecurrent = src[pos++];}v%0")
-call add(cmds, "/void getToken$%Avoid expect(String token) {if (token != current) throw \"Expected '$token', found '$current' at $pos\";getToken();}v%0")
-call add(cmds, "/void expect$%Abool accept(String token) {if (token != current) return false;getToken();return true;}v%0")
-call add(cmds, "Gaint main() {Parser parser = new Parser(\"ab?c\");return 0;}")
-
 call add(cmds, "1GOclass Ast {}class BinaryAst extends Ast {BinaryAst(this.l, this.r);Ast l, r;}v1G")
 call add(cmds, "/class Binary$%Aclass Literal extends Ast {Literal(this.str);String str;}v%0")
 call add(cmds, "/class Lite$%A// A series of terms matched one after the other.class Alternative extends BinaryAst{Alternative(Ast l, Ast r) : super(l, r);}v%0k")
