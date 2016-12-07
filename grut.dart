@@ -93,5 +93,6 @@ class Parser {
 
 int main() {
   Parser parser = new Parser("ab?c");
+  Ast ast = parser.parse();
   return 0;
 }
