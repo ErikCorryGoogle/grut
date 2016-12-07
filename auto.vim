@@ -7,7 +7,7 @@ call add(cmds, "/class Literal$%Ovoid gen(String successor) {print(\"define $
 call add(cmds, "/class Disj$%kAvoid gen(String succ) {print('define $linkage i32 @$name(i8* %s) {');print('  %left = call i32 @${l.name}(i8* %s)');print('  %comparison = icmp eq i32 %left, 0');print('  br i1 %comparison, label %left_failed, label %got_result');print('left_failed:');print('  %right = call i32 @${r.name}(i8* %s)');print('  br label %got_result');print('got_result:');print('  %result = phi i32 [ %right, %left_failed ], [ 1, %0 ]');print('  ret i32 %result');print('}');l.gen(succ);r.gen(succ);}")
 call add(cmds, "/class Empty$zz%Ovoid gen(String succ) {forward(succ);}v%0")
 call add(cmds, "/class Alter$zz%Ovoid gen(String succ) {forward(l.name);l.gen(r.name);r.gen(succ);}v%0")
-call add(cmds, "/main$%cnmain(List<String> args) {Parser parser = new Parser(\"a(b|c)?d\");Ast ast = parser.parse();if (args[0] == \"dot\") {print(\"Digraph G {\");ast.dump();print(\"}\");} else {print(\"declare i32 @match(i8* %s)\");ast.gen(\"match\");}jv%0")
+call add(cmds, "/main$%cnmain(List<String> args) {Parser parser = new Parser(\"a(b|c)?d\");Ast ast = parser.parse();if (args[0] == \"dot\") {print(\"Digraph G {\");ast.dump();print(\"}\");} else {print(\"declare i32 @match(i8* %s)\");ast.gen(\"match\");return 0;}jv%0")
 
 function! Step()
   let cmd = g:cmds[g:i]
