@@ -1,7 +1,6 @@
 set hl=vb,Vb,lb,ib
 
 let cmds = []
-call add(cmds, "1GOclass Ast {}class BinaryAst extends Ast {BinaryAst(this.l, this.r);Ast l, r;}v1G")
 call add(cmds, "/class Binary$%Aclass Literal extends Ast {Literal(this.str);String str;}v%0")
 call add(cmds, "/class Lite$%A// A series of terms matched one after the other.class Alternative extends BinaryAst{Alternative(Ast l, Ast r) : super(l, r);}v%0k")
 call add(cmds, "/class Alter$%A// A series of alternatives separated by '|'.class Disjunction extends BinaryAst{Disjunction(Ast l, Ast r) : super(l, r);}v%0k")
