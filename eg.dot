@@ -1,0 +1,6 @@
+Digraph G {
+  root -> branch;
+  branch -> leaf1;
+  branch -> leaf2;
+  root -> leaf3;
+}
