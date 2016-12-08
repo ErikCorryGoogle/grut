@@ -6,16 +6,15 @@ abstract class Ast {
     print('"$name" [label="$this"];');
   }
   void gen(String successor);
-  String get linkage => name == "f0" ? "external" : "internal";
   void forward(String to) {
-    print("define $linkage i32 @$name(i8* %s) {");
+    print("define internal i32 @$name(i8* %s) {");
     print("  %result = call i32 @$to(i8* %s)");
     print("  ret i32 %result");
     print("}");
   }
 }
 
-class BinaryAst extends Ast {
+abstract class BinaryAst extends Ast {
   BinaryAst(this.l, this.r);
   Ast l, r;
 
@@ -28,17 +27,32 @@ class BinaryAst extends Ast {
   }
 }
 
-class Literal extends Ast {
-  Literal(this.str);
-  String str;
+class Dot extends Single {
+  String get condition => "ne";
+  int get code => 0;
+  String toString() => ".";
+}
 
-  String toString() => str;
+class Literal extends Single {
+  Literal(this.char);
+  String char;
+
+  String get condition => "eq";
+  int get code => char.codeUnitAt(0);
+  String toString() => char;
+}
+
+// Single char superclass.
+abstract class Single extends Ast {
+  String get condition;
+  int get code;
+
   void gen(String successor) {
-    print("define $linkage i32 @$name(i8* %s) {");
+    print("define internal i32 @$name(i8* %s) {");
     // char c = *s
     print("  %c = load i8, i8* %s, align 1");
     // bool comparison = c == ascii_code_of_literal
-    print("  %comparison = icmp eq i8 %c, ${str.codeUnitAt(0)}");
+    print("  %comparison = icmp $condition i8 %c, $code");
     // if comparison goto matched else goto got_result;
     print("  br i1 %comparison, label %matched, label %got_result");
     print("matched:");
@@ -82,7 +96,7 @@ class Disjunction extends BinaryAst{
 
   String toString() => "($l|$r)";
   void gen(String succ) {
-    print('define $linkage i32 @$name(i8* %s) {');
+    print('define internal i32 @$name(i8* %s) {');
     print('  %left = call i32 @${l.name}(i8* %s)');
     print('  %comparison = icmp eq i32 %left, 0');
     print('  br i1 %comparison, label %left_failed, label %got_result');
@@ -95,6 +109,34 @@ class Disjunction extends BinaryAst{
     print('}');
     l.gen(succ);
     r.gen(succ);
+  }
+}
+
+abstract class UnaryAst extends Ast {
+  UnaryAst(this.ast);
+  Ast ast;
+  void dump() {
+    print('"$name" [label="$this"];');
+    print('"$name" -> "${ast.name}";');
+    ast.dump();
+  }
+}
+
+class Asterisk extends UnaryAst {
+  Asterisk(Ast ast) : super(ast);
+  String toString() => "($ast)*";
+  void gen(String succ) {
+    print("define internal i32 @$name(i8* %s) {");
+    print("  %result = call i32 @${ast.name}(i8* %s)");
+    print("  %comparison = icmp eq i32 %result, 0");
+    print("  br i1 %comparison, label %failed, label %ok");
+    print("failed:");
+    print("  %succ = call i32 @${succ}(i8* %s)");
+    print("  ret i32 %succ");
+    print("ok:");
+    print("  ret i32 1");
+    print("}");
+    ast.gen(name);
   }
 }
 
@@ -118,6 +160,7 @@ class Parser {
       return ast;
     }
     if (current == "|" || current == ")" || current == "") return null;
+    if (accept(".")) return new Dot();
     Ast ast = new Literal(current);
     accept(current);
     return ast;
@@ -127,6 +170,7 @@ class Parser {
     Ast ast = parseAtom();
     if (ast == null) return null;
     if (accept("?")) return new Disjunction(ast, new EmptyAlternative());
+    if (accept("*")) return new Asterisk(ast);
     return ast;
   }
 
@@ -168,7 +212,7 @@ class Parser {
 }
 
 int main(List<String> args) {
-  Parser parser = new Parser("a(b|c)?d");
+  Parser parser = new Parser(".*a.*e.*i.*o.*u.*y");
   Ast ast = parser.parse();
   if (args[0] == "dot") {
     print("Digraph G {");
@@ -177,6 +221,10 @@ int main(List<String> args) {
   } else {
     print("declare i32 @match(i8* %s)");
     ast.gen("match");
-    return 0;
+    print("define external i32 @grut(i8* %s) {");
+    print("  %result = call i32 @${ast.name}(i8* %s)");
+    print("  ret i32 %result");
+    print("}");
   }
+  return 0;
 }
