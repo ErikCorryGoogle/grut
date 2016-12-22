@@ -8,6 +8,8 @@ class State {
 abstract class Ast {
   static int ctr = 0;
   String name = "f${ctr++}";
+  int get minWidth;
+  int get maxWidth;
 
   // Prints the dot-file (graphviz) output for each AST node.
   void dump() {
@@ -39,6 +41,10 @@ abstract class Ast {
 abstract class BinaryAst extends Ast {
   BinaryAst(this.l, this.r);
   Ast l, r;
+  int minWidthCached;
+  bool minWidthIsCalculated = false;
+  int maxWidthCached;
+  bool maxWidthIsCalculated = false;
 
   void dump() {
     super.dump();
@@ -58,6 +64,8 @@ class Dot extends Single {
   int get code => 0;
   String toString() => ".";
   bool get advance => true;
+  int get minWidth => 1;
+  int get maxWidth => 1;
 }
 
 class End extends Single {
@@ -65,6 +73,8 @@ class End extends Single {
   int get code => 0;  // Match null character at end of string.
   String toString() => "\$";
   bool get advance => false;  // Zero width '$' assertion does not advance.
+  int get minWidth => 0;
+  int get maxWidth => 0;
 }
 
 class Literal extends Single {
@@ -77,6 +87,8 @@ class Literal extends Single {
   int get code => char.codeUnitAt(0);
   String toString() => escaped;
   bool get advance => true;
+  int get minWidth => 1;
+  int get maxWidth => 1;
 }
 
 class Range {
@@ -188,6 +200,8 @@ class CharacterClass extends Ast {
     print("}");
   }
   String toString() => "[${ranges.join()}]";
+  int get minWidth => 1;
+  int get maxWidth => 1;
 }
 
 class Start extends Ast {
@@ -206,6 +220,8 @@ class Start extends Ast {
     print("}");
   }
   bool isAnchored() => true;
+  int get minWidth => 0;
+  int get maxWidth => 1;
 }
 
 // Single char superclass.
@@ -243,7 +259,7 @@ abstract class Single extends Ast {
 }
 
 // A series of terms matched one after the other.
-class Alternative extends BinaryAst{
+class Alternative extends BinaryAst {
   Alternative(Ast l, Ast r) : super(l, r);
 
   String toString() => "($l$r)";
@@ -252,7 +268,24 @@ class Alternative extends BinaryAst{
     l.gen(state, r.name);
     r.gen(state, succ);
   }
-  bool isAnchored() => l.isAnchored();
+  bool isAnchored() {
+    if (l.maxWidth == 0) return l.isAnchored() || r.isAnchored();
+    return l.isAnchored();
+  }
+  int get minWidth {
+    if (minWidthIsCalculated) return minWidthCached;
+    minWidthIsCalculated = true;
+    return minWidthCached = l.minWidth + r.minWidth;
+  }
+  int get maxWidth {
+    if (maxWidthIsCalculated) return maxWidthCached;
+    maxWidthIsCalculated = true;
+    int rw = r.maxWidth;
+    if (rw == null) return null;
+    int lw = l.maxWidth;
+    if (lw == null) return null;
+    return maxWidthCached = lw + rw;
+  }
 }
 
 class EmptyAlternative extends Ast {
@@ -260,6 +293,8 @@ class EmptyAlternative extends Ast {
   void gen(State state, String succ) {
     forward(succ);
   }
+  int get minWidth => 0;
+  int get maxWidth => 0;
 }
 
 // A series of alternatives separated by '|'.
@@ -283,6 +318,20 @@ class Disjunction extends BinaryAst{
     r.gen(state, succ);
   }
   bool isAnchored() => l.isAnchored() && r.isAnchored();
+  int get minWidth {
+    if (minWidthIsCalculated) return minWidthCached;
+    minWidthIsCalculated = true;
+    return minWidthCached = min(l.minWidth, r.minWidth);
+  }
+  int get maxWidth {
+    if (maxWidthIsCalculated) return maxWidthCached;
+    maxWidthIsCalculated = true;
+    int rw = r.maxWidth;
+    if (rw == null) return null;
+    int lw = l.maxWidth;
+    if (lw == null) return null;
+    return maxWidthCached = max(lw, rw);
+  }
 }
 
 abstract class UnaryAst extends Ast {
@@ -294,6 +343,20 @@ abstract class UnaryAst extends Ast {
     ast.dump();
   }
   void alloc(State state) { ast.alloc(state); }
+  int minWidthCached;
+  bool minWidthIsCalculated = false;
+  int maxWidthCached;
+  bool maxWidthIsCalculated = false;
+  int get minWidth {
+    if (minWidthIsCalculated) return minWidthCached;
+    minWidthIsCalculated = true;
+    return minWidthCached = ast.minWidth;
+  }
+  int get maxWidth {
+    if (maxWidthIsCalculated) return maxWidthCached;
+    maxWidthIsCalculated = true;
+    return maxWidthCached = ast.maxWidth;
+  }
 }
 
 class Capturing extends UnaryAst {
@@ -401,6 +464,19 @@ class Loop extends UnaryAst {
     ast.alloc(state);
   }
   bool isAnchored() => min > 0 && ast.isAnchored();
+  int get minWidth {
+    if (min == 0) return 0;
+    return super.minWidth;
+  }
+  int get maxWidth {
+    if (max == null) {
+      if (super.maxWidth == 0) return 0;
+      return null;
+    }
+    int w = super.maxWidth;
+    if (w == null) return null;
+    return max * w;
+  }
 }
 
 class Parser {
@@ -628,7 +704,7 @@ void defineTopLevel(State state, String name) {
 }
 
 int main(List<String> args) {
-  Parser parser = new Parser(r'^.a.{2}?z$');
+  Parser parser = new Parser(r'a.{2}?z$');
   Ast ast = parser.parse();
   if (args[0] == "dot") {
     print("Digraph G {");
