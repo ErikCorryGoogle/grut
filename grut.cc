@@ -4,6 +4,7 @@
 #include <string>
 
 struct GrutState {
+  char* start_of_string;
   // TODO: We need to handle the correct sizing of this.
   int captures_and_registers[32];
 };

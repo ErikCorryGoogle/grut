@@ -25,6 +25,7 @@ abstract class Ast {
   // For each AST node, determines how many registers (slots of storage in the
   // state) we are going to need when code generating.
   void alloc(State state) {}
+  bool isAnchored() => false;
   // Utility function used by gen.  Merely calls a different function and
   // returns whatever that function returns.
   void forward(String to) {
@@ -56,6 +57,14 @@ class Dot extends Single {
   String get condition => "ne";
   int get code => 0;
   String toString() => ".";
+  bool get advance => true;
+}
+
+class End extends Single {
+  String get condition => "eq";
+  int get code => 0;  // Match null character at end of string.
+  String toString() => "\$";
+  bool get advance => false;  // Zero width '$' assertion does not advance.
 }
 
 class Literal extends Single {
@@ -67,6 +76,7 @@ class Literal extends Single {
   String get condition => "eq";
   int get code => char.codeUnitAt(0);
   String toString() => escaped;
+  bool get advance => true;
 }
 
 class Range {
@@ -90,31 +100,31 @@ class Range {
   }
 }
 
-class CharClass extends Ast {
-  CharClass();
-  CharClass.digit() { add("0", "9"); }
-  CharClass.word() {
+class CharacterClass extends Ast {
+  CharacterClass();
+  CharacterClass.digit() { add("0", "9"); }
+  CharacterClass.word() {
     add("A", "Z");
     add("a", "z");
     add("0", "9");
     add("_", "_");
   }
-  CharClass.whiteSpace() {
+  CharacterClass.whiteSpace() {
     add("\t", "\r");
     add(" ", " ");
   }
-  CharClass.notDigit() {
+  CharacterClass.notDigit() {
     addNonInclusive("\x00", "0");
     addNonInclusive("9", "\u0100");
   }
-  CharClass.notWord() {
+  CharacterClass.notWord() {
     addNonInclusive("\x00", "0");
     addNonInclusive("9", "A");
     addNonInclusive("Z", "_");
     addNonInclusive("_", "a");
     addNonInclusive("z", "\u0100");
   }
-  CharClass.notWhiteSpace() {
+  CharacterClass.notWhiteSpace() {
     addNonInclusive("\x00", "\t");
     addNonInclusive("\r", " ");
     addNonInclusive(" ", "\u0100");
@@ -130,7 +140,7 @@ class CharClass extends Ast {
   void addNonInclusive(String from, String to) {
     ranges.add(new Range(from.codeUnitAt(0) + 1, to.codeUnitAt(0) - 1));
   }
-  void mergeIn(CharClass other) { ranges.addAll(other.ranges); }
+  void mergeIn(CharacterClass other) { ranges.addAll(other.ranges); }
 
   void sortMerge() {
     ranges.sort((a, b) => a.from - b.from);
@@ -180,10 +190,29 @@ class CharClass extends Ast {
   String toString() => "[${ranges.join()}]";
 }
 
+class Start extends Ast {
+  String toString() => "^";
+  void gen(State state, String successor) {
+    print("define internal i32 @$name(%restate_t* %state, i8* %s) {");
+    print("  %start_gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0");
+    print("  %start = load i8*, i8** %start_gep");
+    print("  %comparison = icmp eq i8* %s, %start");
+    print("  br i1 %comparison, label %matched, label %fail");
+    print("matched:");
+    print("  %succ_result = call i32 @$successor(%restate_t* %state, i8* %s)");
+    print("  ret i32 %succ_result");
+    print("fail:");
+    print("  ret i32 0");
+    print("}");
+  }
+  bool isAnchored() => true;
+}
+
 // Single char superclass.
 abstract class Single extends Ast {
   String get condition;
   int get code;
+  bool get advance;
 
   void gen(State state, String successor) {
     print("define internal i32 @$name(%restate_t* %state, i8* %s) {");
@@ -194,10 +223,14 @@ abstract class Single extends Ast {
     // if comparison goto matched else goto got_result;
     print("  br i1 %comparison, label %matched, label %got_result");
     print("matched:");
-    // char* next = s + 1;
-    print("  %next = getelementptr i8, i8* %s, i64 1");
-    // int succ_result = f42(next);
-    print("  %succ_result = call i32 @$successor(%restate_t* %state, i8* %next)");
+    if (advance) {
+      // char* next = s + 1;
+      print("  %next = getelementptr i8, i8* %s, i64 1");
+      // int succ_result = f42(next);
+      print("  %succ_result = call i32 @$successor(%restate_t* %state, i8* %next)");
+    } else {
+      print("  %succ_result = call i32 @$successor(%restate_t* %state, i8* %s)");
+    }
     // goto got_result;
     print("  br label %got_result");
     print("got_result:");
@@ -219,6 +252,7 @@ class Alternative extends BinaryAst{
     l.gen(state, r.name);
     r.gen(state, succ);
   }
+  bool isAnchored() => l.isAnchored();
 }
 
 class EmptyAlternative extends Ast {
@@ -248,6 +282,7 @@ class Disjunction extends BinaryAst{
     l.gen(state, succ);
     r.gen(state, succ);
   }
+  bool isAnchored() => l.isAnchored() && r.isAnchored();
 }
 
 abstract class UnaryAst extends Ast {
@@ -265,45 +300,56 @@ class Capturing extends UnaryAst {
   Capturing(Ast ast) : super(ast);
   int capture_register;
   // TODO: Set registers when capturing.
-  void gen(State state, String succ) { ast.gen(state, succ); }
+  void gen(State state, String succ) {
+    forward(ast.name);
+    ast.gen(state, succ);
+  }
   void alloc(State state) {
     capture_register = state.captures;
     state.captures += 2;
     ast.alloc(state);
   }
   String toString() => "($ast)";
+  bool isAnchored() => ast.isAnchored();
 }
 
 class Loop extends UnaryAst {
-  Loop(Ast ast, this.min, this.max) : super(ast);
-  Loop.asterisk(Ast ast) : super(ast);
-  Loop.plus(Ast ast) : super(ast) { min = 1; }
+  Loop(Ast ast, this.min, this.max, this.nonGreedy) : super(ast);
+  Loop.asterisk(Ast ast, this.nonGreedy) : super(ast);
+  Loop.plus(Ast ast, this.nonGreedy) : super(ast) { min = 1; }
   int min = 0;
   int max = null;  // Nullable - null means no max.
+  bool nonGreedy;
+  bool get greedy => !nonGreedy;
   bool get counted => min != 0 || max != null;
   int counter_register;
   String toString() {
+    String n = greedy ? "" : "?";
     if (max == null) {
-      if (min == 0) return "($ast)*";
-      if (min == 1) return "($ast)+";
-      return "($ast){$min,}";
+      if (min == 0) return "($ast)*$n";
+      if (min == 1) return "($ast)+$n";
+      return "($ast){$min,}$n";
     }
-    if (min == max) return "($ast){$min}";
-    return "($ast){$min,$max}";
+    if (min == max) return "($ast){$min}$n";
+    return "($ast){$min,$max}$n";
   }
   // This is for greedy loops, so we first try to match the body of the loop,
   // and only if that fails, we try to match the successor.  When matching the
   // body, the loop itself is the successor - despite the name "Loop", we are
   // implementing this using recursion.
   void gen(State state, String succ) {
+    String first_call = greedy ? ast.name : succ;
+    String second_call = greedy ? succ : ast.name;
     print("define internal i32 @$name(%restate_t* %state, i8* %s) {");
     if (counted) genPreCounter(state);
-    print("  %result = call i32 @${ast.name}(%restate_t* %state, i8* %s)");
+    print("  %result = call i32 @$first_call(%restate_t* %state, i8* %s)");
+    if (counted && greedy) print("  store i32 %counter, i32* %gep");
     print("  %comparison = icmp eq i32 %result, 0");
     print("  br i1 %comparison, label %failed, label %ok");
     print("failed:");
     if (counted) genPostCounter();
-    print("  %succ = call i32 @${succ}(%restate_t* %state, i8* %s)");
+    print("  %succ = call i32 @$second_call(%restate_t* %state, i8* %s)");
+    if (counted && !greedy) print("  store i32 %counter, i32* %gep");
     print("  ret i32 %succ");
     print("ok:");
     print("  ret i32 1");
@@ -313,32 +359,48 @@ class Loop extends UnaryAst {
   // If this loop is counted then increment the counter and check that we have
   // not exceeded the max number of iterations.
   void genPreCounter(State state) {
-    print("  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 ${counter_register}");
+    print("  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 ${counter_register}");
     print("  %counter = load i32, i32* %gep");
-    if (max != null) {
+    if (max != null && greedy) {
       print("  %maxcomp = icmp eq i32 %counter, $max");
       print("  br i1 %maxcomp, label %failed, label %counter_low_enough");
       print("counter_low_enough:");
+    } else if (min != 0 && !greedy) {
+      print("  %mincomp = icmp ult i32 %counter, $min");
+      print("  br i1 %mincomp, label %failed, label %counter_big_enough");
+      print("counter_big_enough:");
     }
-    print("  %incremented = add i32 %counter, 1");
-    print("  store i32 %incremented, i32* %gep");
+    if (greedy) {
+      print("  %incremented = add i32 %counter, 1");
+      print("  store i32 %incremented, i32* %gep");
+    }
   }
   // If this loop is counted then restore the counter (decrementing it) and
   // check that we have hit at least the min number of iterations.
   void genPostCounter() {
-    print("  store i32 %counter, i32* %gep");
-    if (min != 0) {
+    if (min != 0 && greedy) {
       print("  %mincomp = icmp ult i32 %counter, $min");
       print("  br i1 %mincomp, label %counter_too_low, label %counter_big_enough");
       print("counter_too_low:");
       print("  ret i32 0;");
       print("counter_big_enough:");
+    } else if (max != null && !greedy) {
+      print("  %maxcomp = icmp eq i32 %counter, $max");
+      print("  br i1 %maxcomp, label %counter_too_high, label %counter_low_enough");
+      print("counter_too_high:");
+      print("  ret i32 0;");
+      print("counter_low_enough:");
+    }
+    if (!greedy) {
+      print("  %incremented = add i32 %counter, 1");
+      print("  store i32 %incremented, i32* %gep");
     }
   }
   void alloc(State state) {
     if (counted) counter_register = state.counters++;
     ast.alloc(state);
   }
+  bool isAnchored() => min > 0 && ast.isAnchored();
 }
 
 class Parser {
@@ -351,6 +413,11 @@ class Parser {
     getToken();
     Ast ast = parseDisjunction();
     expect("");
+    if (!ast.isAnchored()) {
+      // For non-sticky regexps (which is the only thing we support) we prepend
+      // a non-greedy loop).
+      ast = new Alternative(new Loop.asterisk(new Dot(), true), ast);
+    }
     return ast;
   }
 
@@ -370,17 +437,20 @@ class Parser {
     if (accept(".")) return new Dot();
     if (accept("\\")) return parseEscape();
     if (accept("[")) return parseCharClass();
+    if (accept("*") || accept("?") || accept("+") || accept("{"))
+      throw "Unexpected quantifier at $pos";
+    if (accept("]")) throw "Unexpected ] at $pos";
     Ast ast = new Literal(current);
     accept(current);
     return ast;
   }
 
   Ast parseCharClass() {
-    CharClass c = new CharClass();
+    CharacterClass c = new CharacterClass();
     while (!accept("]")) {
       int from, to;
       if (accept(r"\")) {
-	CharClass clarse = acceptClassLetter();
+	CharacterClass clarse = acceptClassLetter();
         if (clarse != null) {
 	  c.mergeIn(clarse);
 	  continue;
@@ -441,7 +511,7 @@ class Parser {
     String char = current;
     String ascii = acceptAsciiEscape();
     if (ascii != null) return new Literal.named(ascii, "\\$char");
-    CharClass clarse = acceptClassLetter();
+    CharacterClass clarse = acceptClassLetter();
     if (clarse != null) return clarse;
     if (accept("")) throw "Unexpected end of regexp at $pos";
     Ast ast = new Literal(current);
@@ -450,6 +520,8 @@ class Parser {
   }
 
   Ast parseTerm() {
+    if (accept("^")) return new Start();
+    if (accept("\$")) return new End();
     Ast ast = parseAtom();
     if (ast == null) return null;
     if (accept("?")) {
@@ -458,8 +530,8 @@ class Parser {
 	return new Disjunction(empty, ast);  // Non-greedy "?".
       return new Disjunction(ast, empty);  // Greedy "?".
     }
-    if (accept("*")) return new Loop.asterisk(ast);
-    if (accept("+")) return new Loop.plus(ast);
+    if (accept("*")) return new Loop.asterisk(ast, accept("?"));
+    if (accept("+")) return new Loop.plus(ast, accept("?"));
     if (accept("{")) {
       // .{2}   - exactly two matches.
       // .{2,}  - at least two matches.
@@ -468,7 +540,7 @@ class Parser {
       int max = accept(",") ? acceptNumber() : min;
       if (max != null && max < min) throw "min must be <= max at $pos";
       expect("}");
-      return new Loop(ast, min, max);
+      return new Loop(ast, min, max, accept("?"));
     }
     return ast;
   }
@@ -527,19 +599,36 @@ class Parser {
     }
   }
 
-  CharClass acceptClassLetter() {
-    if (accept("d")) return new CharClass.digit();
-    if (accept("s")) return new CharClass.whiteSpace();
-    if (accept("w")) return new CharClass.word();
-    if (accept("D")) return new CharClass.notDigit();
-    if (accept("S")) return new CharClass.notWhiteSpace();
-    if (accept("W")) return new CharClass.notWord();
+  CharacterClass acceptClassLetter() {
+    if (accept("d")) return new CharacterClass.digit();
+    if (accept("s")) return new CharacterClass.whiteSpace();
+    if (accept("w")) return new CharacterClass.word();
+    if (accept("D")) return new CharacterClass.notDigit();
+    if (accept("S")) return new CharacterClass.notWhiteSpace();
+    if (accept("W")) return new CharacterClass.notWord();
     return null;
   }
 }
 
+void defineTopLevel(State state, String name) {
+  print("define external i32 @grut(%restate_t* %state, i8* %s) {");
+  print("  %start_gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0");
+  print("  store i8* %s, i8** %start_gep");
+  for (int i = 0; i < state.captures; i++) {
+    print("  %capture_gep$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $i");
+    print("  store i8* null, i8** %capture_gep$i");
+  }
+  for (int i = 0; i < state.counters; i++) {
+    print("  %counter_gep$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 $i");
+    print("  store i32 0, i32* %counter_gep$i");
+  }
+  print("  %result = call i32 @$name(%restate_t* %state, i8* %s)");
+  print("  ret i32 %result");
+  print("}");
+}
+
 int main(List<String> args) {
-  Parser parser = new Parser(r'a[\dp-za-n\f"\]]+z');
+  Parser parser = new Parser(r'^.a.{2}?z$');
   Ast ast = parser.parse();
   if (args[0] == "dot") {
     print("Digraph G {");
@@ -549,20 +638,9 @@ int main(List<String> args) {
     print("declare i32 @match(%restate_t* %state, i8* %s)");
     State state = new State();
     ast.alloc(state);
-    print("%restate_t = type { [${state.captures} x i32], [${state.counters} x i32] }");
+    print("%restate_t = type { i8*, [${state.captures} x i8*], [${state.counters} x i32] }");
     ast.gen(state, "match");
-    print("define external i32 @grut(%restate_t* %state, i8* %s) {");
-    for (int i = 0; i < state.captures; i++) {
-      print("  %capture_gep$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0, i32 $i");
-      print("  store i8* 0, i8** %capture_gep$i");
-    }
-    for (int i = 0; i < state.counters; i++) {
-      print("  %counter_gep$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $i");
-      print("  store i32 0, i32* %counter_gep$i");
-    }
-    print("  %result = call i32 @${ast.name}(%restate_t* %state, i8* %s)");
-    print("  ret i32 %result");
-    print("}");
+    defineTopLevel(state, ast.name);
   }
   return 0;
 }
