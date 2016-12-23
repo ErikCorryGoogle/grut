@@ -1,6 +1,9 @@
+import "dart:io";
 import "dart:math";
 
 class State {
+  State(this.out);
+  IOSink out;
   int captures = 0;
   int counters = 0;
 }
@@ -10,6 +13,10 @@ abstract class Ast {
   String name = "f${ctr++}";
   int get minWidth;
   int get maxWidth;
+
+  void _(State state, Object o) {
+    state.out.writeln(o);
+  }
 
   // Prints the dot-file (graphviz) output for each AST node.
   void dump() {
@@ -30,11 +37,11 @@ abstract class Ast {
   bool isAnchored() => false;
   // Utility function used by gen.  Merely calls a different function and
   // returns whatever that function returns.
-  void forward(String to) {
-    print("define internal i32 @$name(%restate_t* %state, i8* %s) {");
-    print("  %result = call i32 @$to(%restate_t* %state, i8* %s)");
-    print("  ret i32 %result");
-    print("}");
+  void forward(State s, String to) {
+    _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
+    _(s, "  %result = call i32 @$to(%restate_t* %state, i8* %s)");
+    _(s, "  ret i32 %result");
+    _(s, "}");
   }
 }
 
@@ -175,29 +182,29 @@ class CharacterClass extends Ast {
     }
   }
 
-  void gen(State state, String successor) {
-    print("define internal i32 @$name(%restate_t* %state, i8* %s) {");
-    print("  %c = load i8, i8* %s, align 1");
+  void gen(State s, String successor) {
+    _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
+    _(s, "  %c = load i8, i8* %s, align 1");
     List<String> phi = new List<String>();
     for (int i = 0; i < ranges.length; i++) {
       Range r = ranges[i];
-      print("  %fromcomparison$i = icmp ult i8 %c, ${r.from}");
-      print("  br i1 %fromcomparison$i, label %got_result, label %from$i");
-      print("from$i:");
-      print("  %tocomparison$i = icmp ugt i8 %c, ${r.to}");
-      print("  br i1 %tocomparison$i, label %next$i, label %matched");
-      print("next$i:");
+      _(s, "  %fromcomparison$i = icmp ult i8 %c, ${r.from}");
+      _(s, "  br i1 %fromcomparison$i, label %got_result, label %from$i");
+      _(s, "from$i:");
+      _(s, "  %tocomparison$i = icmp ugt i8 %c, ${r.to}");
+      _(s, "  br i1 %tocomparison$i, label %next$i, label %matched");
+      _(s, "next$i:");
       phi.add(", [ 0, %next$i ]");
     }
-    print("  br label %got_result");
-    print("matched:");
-    print("  %next = getelementptr i8, i8* %s, i64 1");
-    print("  %succ_result = call i32 @$successor(%restate_t* %state, i8* %next)");
-    print("  br label %got_result");
-    print("got_result:");
-    print("  %result = phi i32 [ %succ_result, %matched ], [ 0, %0 ]${phi.join()}");
-    print("  ret i32 %result");
-    print("}");
+    _(s, "  br label %got_result");
+    _(s, "matched:");
+    _(s, "  %next = getelementptr i8, i8* %s, i64 1");
+    _(s, "  %succ_result = call i32 @$successor(%restate_t* %state, i8* %next)");
+    _(s, "  br label %got_result");
+    _(s, "got_result:");
+    _(s, "  %result = phi i32 [ %succ_result, %matched ], [ 0, %0 ]${phi.join()}");
+    _(s, "  ret i32 %result");
+    _(s, "}");
   }
   String toString() => "[${ranges.join()}]";
   int get minWidth => 1;
@@ -206,18 +213,18 @@ class CharacterClass extends Ast {
 
 class Start extends Ast {
   String toString() => "^";
-  void gen(State state, String successor) {
-    print("define internal i32 @$name(%restate_t* %state, i8* %s) {");
-    print("  %start_gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0");
-    print("  %start = load i8*, i8** %start_gep");
-    print("  %comparison = icmp eq i8* %s, %start");
-    print("  br i1 %comparison, label %matched, label %fail");
-    print("matched:");
-    print("  %succ_result = call i32 @$successor(%restate_t* %state, i8* %s)");
-    print("  ret i32 %succ_result");
-    print("fail:");
-    print("  ret i32 0");
-    print("}");
+  void gen(State s, String successor) {
+    _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
+    _(s, "  %start_gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0");
+    _(s, "  %start = load i8*, i8** %start_gep");
+    _(s, "  %comparison = icmp eq i8* %s, %start");
+    _(s, "  br i1 %comparison, label %matched, label %fail");
+    _(s, "matched:");
+    _(s, "  %succ_result = call i32 @$successor(%restate_t* %state, i8* %s)");
+    _(s, "  ret i32 %succ_result");
+    _(s, "fail:");
+    _(s, "  ret i32 0");
+    _(s, "}");
   }
   bool isAnchored() => true;
   int get minWidth => 0;
@@ -230,31 +237,31 @@ abstract class Single extends Ast {
   int get code;
   bool get advance;
 
-  void gen(State state, String successor) {
-    print("define internal i32 @$name(%restate_t* %state, i8* %s) {");
+  void gen(State s, String successor) {
+    _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
     // char c = *s
-    print("  %c = load i8, i8* %s, align 1");
+    _(s, "  %c = load i8, i8* %s, align 1");
     // bool comparison = c == ascii_code_of_literal
-    print("  %comparison = icmp $condition i8 %c, $code");
+    _(s, "  %comparison = icmp $condition i8 %c, $code");
     // if comparison goto matched else goto got_result;
-    print("  br i1 %comparison, label %matched, label %got_result");
-    print("matched:");
+    _(s, "  br i1 %comparison, label %matched, label %got_result");
+    _(s, "matched:");
     if (advance) {
       // char* next = s + 1;
-      print("  %next = getelementptr i8, i8* %s, i64 1");
+      _(s, "  %next = getelementptr i8, i8* %s, i64 1");
       // int succ_result = f42(next);
-      print("  %succ_result = call i32 @$successor(%restate_t* %state, i8* %next)");
+      _(s, "  %succ_result = call i32 @$successor(%restate_t* %state, i8* %next)");
     } else {
-      print("  %succ_result = call i32 @$successor(%restate_t* %state, i8* %s)");
+      _(s, "  %succ_result = call i32 @$successor(%restate_t* %state, i8* %s)");
     }
     // goto got_result;
-    print("  br label %got_result");
-    print("got_result:");
+    _(s, "  br label %got_result");
+    _(s, "got_result:");
     // int result = phi(succ_result, 0);
-    print("  %result = phi i32 [ %succ_result, %matched ], [ 0, %0 ]");
+    _(s, "  %result = phi i32 [ %succ_result, %matched ], [ 0, %0 ]");
     // return result
-    print("  ret i32 %result");
-    print("}");
+    _(s, "  ret i32 %result");
+    _(s, "}");
   }
 }
 
@@ -264,7 +271,7 @@ class Alternative extends BinaryAst {
 
   String toString() => "($l$r)";
   void gen(State state, String succ) {
-    forward(l.name);
+    forward(state, l.name);
     l.gen(state, r.name);
     r.gen(state, succ);
   }
@@ -291,7 +298,7 @@ class Alternative extends BinaryAst {
 class EmptyAlternative extends Ast {
   String toString() => "";
   void gen(State state, String succ) {
-    forward(succ);
+    forward(state, succ);
   }
   int get minWidth => 0;
   int get maxWidth => 0;
@@ -302,20 +309,20 @@ class Disjunction extends BinaryAst{
   Disjunction(Ast l, Ast r) : super(l, r);
 
   String toString() => "($l|$r)";
-  void gen(State state, String succ) {
-    print('define internal i32 @$name(%restate_t* %state, i8* %s) {');
-    print('  %left = call i32 @${l.name}(%restate_t* %state, i8* %s)');
-    print('  %comparison = icmp eq i32 %left, 0');
-    print('  br i1 %comparison, label %left_failed, label %got_result');
-    print('left_failed:');
-    print('  %right = call i32 @${r.name}(%restate_t* %state, i8* %s)');
-    print('  br label %got_result');
-    print('got_result:');
-    print('  %result = phi i32 [ %right, %left_failed ], [ 1, %0 ]');
-    print('  ret i32 %result');
-    print('}');
-    l.gen(state, succ);
-    r.gen(state, succ);
+  void gen(State s, String succ) {
+    _(s, 'define internal i32 @$name(%restate_t* %state, i8* %s) {');
+    _(s, '  %left = call i32 @${l.name}(%restate_t* %state, i8* %s)');
+    _(s, '  %comparison = icmp eq i32 %left, 0');
+    _(s, '  br i1 %comparison, label %left_failed, label %got_result');
+    _(s, 'left_failed:');
+    _(s, '  %right = call i32 @${r.name}(%restate_t* %state, i8* %s)');
+    _(s, '  br label %got_result');
+    _(s, 'got_result:');
+    _(s, '  %result = phi i32 [ %right, %left_failed ], [ 1, %0 ]');
+    _(s, '  ret i32 %result');
+    _(s, '}');
+    l.gen(s, succ);
+    r.gen(s, succ);
   }
   bool isAnchored() => l.isAnchored() && r.isAnchored();
   int get minWidth {
@@ -364,7 +371,7 @@ class Capturing extends UnaryAst {
   int capture_register;
   // TODO: Set registers when capturing.
   void gen(State state, String succ) {
-    forward(ast.name);
+    forward(state, ast.name);
     ast.gen(state, succ);
   }
   void alloc(State state) {
@@ -400,63 +407,63 @@ class Loop extends UnaryAst {
   // and only if that fails, we try to match the successor.  When matching the
   // body, the loop itself is the successor - despite the name "Loop", we are
   // implementing this using recursion.
-  void gen(State state, String succ) {
+  void gen(State s, String succ) {
     String first_call = greedy ? ast.name : succ;
     String second_call = greedy ? succ : ast.name;
-    print("define internal i32 @$name(%restate_t* %state, i8* %s) {");
-    if (counted) genPreCounter(state);
-    print("  %result = call i32 @$first_call(%restate_t* %state, i8* %s)");
-    if (counted && greedy) print("  store i32 %counter, i32* %gep");
-    print("  %comparison = icmp eq i32 %result, 0");
-    print("  br i1 %comparison, label %failed, label %ok");
-    print("failed:");
-    if (counted) genPostCounter();
-    print("  %succ = call i32 @$second_call(%restate_t* %state, i8* %s)");
-    if (counted && !greedy) print("  store i32 %counter, i32* %gep");
-    print("  ret i32 %succ");
-    print("ok:");
-    print("  ret i32 1");
-    print("}");
-    ast.gen(state, name);
+    _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
+    if (counted) genPreCounter(s);
+    _(s, "  %result = call i32 @$first_call(%restate_t* %state, i8* %s)");
+    if (counted && greedy) _(s, "  store i32 %counter, i32* %gep");
+    _(s, "  %comparison = icmp eq i32 %result, 0");
+    _(s, "  br i1 %comparison, label %failed, label %ok");
+    _(s, "failed:");
+    if (counted) genPostCounter(s);
+    _(s, "  %succ = call i32 @$second_call(%restate_t* %state, i8* %s)");
+    if (counted && !greedy) _(s, "  store i32 %counter, i32* %gep");
+    _(s, "  ret i32 %succ");
+    _(s, "ok:");
+    _(s, "  ret i32 1");
+    _(s, "}");
+    ast.gen(s, name);
   }
   // If this loop is counted then increment the counter and check that we have
   // not exceeded the max number of iterations.
-  void genPreCounter(State state) {
-    print("  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 ${counter_register}");
-    print("  %counter = load i32, i32* %gep");
+  void genPreCounter(State s) {
+    _(s, "  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 ${counter_register}");
+    _(s, "  %counter = load i32, i32* %gep");
     if (max != null && greedy) {
-      print("  %maxcomp = icmp eq i32 %counter, $max");
-      print("  br i1 %maxcomp, label %failed, label %counter_low_enough");
-      print("counter_low_enough:");
+      _(s, "  %maxcomp = icmp eq i32 %counter, $max");
+      _(s, "  br i1 %maxcomp, label %failed, label %counter_low_enough");
+      _(s, "counter_low_enough:");
     } else if (min != 0 && !greedy) {
-      print("  %mincomp = icmp ult i32 %counter, $min");
-      print("  br i1 %mincomp, label %failed, label %counter_big_enough");
-      print("counter_big_enough:");
+      _(s, "  %mincomp = icmp ult i32 %counter, $min");
+      _(s, "  br i1 %mincomp, label %failed, label %counter_big_enough");
+      _(s, "counter_big_enough:");
     }
     if (greedy) {
-      print("  %incremented = add i32 %counter, 1");
-      print("  store i32 %incremented, i32* %gep");
+      _(s, "  %incremented = add i32 %counter, 1");
+      _(s, "  store i32 %incremented, i32* %gep");
     }
   }
   // If this loop is counted then restore the counter (decrementing it) and
   // check that we have hit at least the min number of iterations.
-  void genPostCounter() {
+  void genPostCounter(State s) {
     if (min != 0 && greedy) {
-      print("  %mincomp = icmp ult i32 %counter, $min");
-      print("  br i1 %mincomp, label %counter_too_low, label %counter_big_enough");
-      print("counter_too_low:");
-      print("  ret i32 0;");
-      print("counter_big_enough:");
+      _(s, "  %mincomp = icmp ult i32 %counter, $min");
+      _(s, "  br i1 %mincomp, label %counter_too_low, label %counter_big_enough");
+      _(s, "counter_too_low:");
+      _(s, "  ret i32 0;");
+      _(s, "counter_big_enough:");
     } else if (max != null && !greedy) {
-      print("  %maxcomp = icmp eq i32 %counter, $max");
-      print("  br i1 %maxcomp, label %counter_too_high, label %counter_low_enough");
-      print("counter_too_high:");
-      print("  ret i32 0;");
-      print("counter_low_enough:");
+      _(s, "  %maxcomp = icmp eq i32 %counter, $max");
+      _(s, "  br i1 %maxcomp, label %counter_too_high, label %counter_low_enough");
+      _(s, "counter_too_high:");
+      _(s, "  ret i32 0;");
+      _(s, "counter_low_enough:");
     }
     if (!greedy) {
-      print("  %incremented = add i32 %counter, 1");
-      print("  store i32 %incremented, i32* %gep");
+      _(s, "  %incremented = add i32 %counter, 1");
+      _(s, "  store i32 %incremented, i32* %gep");
     }
   }
   void alloc(State state) {
@@ -686,49 +693,59 @@ class Parser {
   }
 }
 
-void defineMatch() {
+void defineMatch(IOSink out) {
   // The successor of the regexp, called if the match succeeds.  It just
   // returns '1' for success.
-  print("define internal i32 @match(%restate_t* %state, i8* %s) {");
-  print("  ret i32 1");
-  print("}");
+  out.writeln("define internal i32 @match(%restate_t* %state, i8* %s) {");
+  out.writeln("  ret i32 1");
+  out.writeln("}");
 }
 
 void defineTopLevel(State state, String symbol, String name) {
-  print("define external i32 @$symbol(%restate_t* %state, i8* %s) {");
-  print("  %start_gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0");
-  print("  store i8* %s, i8** %start_gep");
+  IOSink out = state.out;
+  out.writeln("define external i32 @$symbol(%restate_t* %state, i8* %s) {");
+  out.writeln("  %start_gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0");
+  out.writeln("  store i8* %s, i8** %start_gep");
   for (int i = 0; i < state.captures; i++) {
-    print("  %capture_gep$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $i");
-    print("  store i8* null, i8** %capture_gep$i");
+    out.writeln("  %capture_gep$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $i");
+    out.writeln("  store i8* null, i8** %capture_gep$i");
   }
   for (int i = 0; i < state.counters; i++) {
-    print("  %counter_gep$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 $i");
-    print("  store i32 0, i32* %counter_gep$i");
+    out.writeln("  %counter_gep$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 $i");
+    out.writeln("  store i32 0, i32* %counter_gep$i");
   }
-  print("  %result = call i32 @$name(%restate_t* %state, i8* %s)");
-  print("  ret i32 %result");
-  print("}");
-
+  out.writeln("  %result = call i32 @$name(%restate_t* %state, i8* %s)");
+  out.writeln("  ret i32 %result");
+  out.writeln("}");
 }
 
 void usage() {
-  print("Usage: grut");
-  print("  [-e <regexp>]");
-  print("  [-d]           (produce graphviz file)");
-  print("  [-l]           (produce LLVM file)");
-  print("  [-s <symbol>]  (default 'grut')");
+  stderr.writeln("Usage: grut");
+  stderr.writeln("  [-e <regexp>]");
+  stderr.writeln("  [-f <regexp_file>]  (read regexp source from file, strip final newline)");
+  stderr.writeln("  [-d]                (produce graphviz file)");
+  stderr.writeln("  [-l]                (produce LLVM file)");
+  stderr.writeln("  [-o filename]       (write to file, default stdout)");
+  stderr.writeln("  [-s <symbol>]       (default 'grut')");
 }
 
 int main(List<String> args) {
   String source;
   String topSymbol = "grut";
+  String filename;
   bool dotFile = false;
   bool llFile = false;
   for (int i = 0; i < args.length; i++) {
     switch (args[i]) {
       case "-e":
         source = args[++i];
+        break;
+      case "-f":
+	source = new File(args[++i]).readAsStringSync();
+	if (source.endsWith("\n")) source = source.substring(0, source.length - 1);
+	break;
+      case "-o":
+        filename = args[++i];
         break;
       case "-d":
         dotFile = true;
@@ -745,35 +762,46 @@ int main(List<String> args) {
     }
   }
   if (!dotFile && !llFile) {
-    print("Specify either -d or -l on the command line");
+    stderr.writeln("Specify either -d or -l on the command line");
     usage();
     return 1;
   }
-  if (dotFile && llFile) {
-    print("You can't specify both .ll and .dot files to be output");
+  if (dotFile && llFile && filename == null) {
+    stderr.writeln("You can't specify both .ll and .dot files to be output to stdout");
     usage();
     return 1;
   }
   if (source == null) {
-    print("No regexp specified");
+    stderr.writeln("No regexp specified");
     usage();
     return 1;
   }
 
-  Parser parser = new Parser(source);
-  Ast ast = parser.parse();
   if (dotFile) {
+    Parser parser = new Parser(source);
+    Ast ast = parser.parse();
     print("Digraph G {");
     ast.dump();
     print("}");
   }
   if (llFile) {
-    defineMatch();
-    State state = new State();
-    ast.alloc(state);
-    print("%restate_t = type { i8*, [${state.captures} x i8*], [${state.counters} x i32] }");
-    ast.gen(state, "match");
-    defineTopLevel(state, topSymbol, ast.name);
+    if (filename != null) {
+      llvmCodeGen(new File(filename).openWrite(), source, topSymbol);
+    } else {
+      llvmCodeGen(stdout, source, topSymbol);
+    }
   }
   return 0;
+}
+
+void llvmCodeGen(IOSink out, String source, String topSymbol) {
+  Parser parser = new Parser(source);
+  Ast ast = parser.parse();
+  State state = new State(out);
+  defineMatch(out);
+  ast.alloc(state);
+  out.writeln("%restate_t = type { i8*, [${state.captures} x i8*], [${state.counters} x i32] }");
+  ast.gen(state, "match");
+  defineTopLevel(state, topSymbol, ast.name);
+  out.close();
 }

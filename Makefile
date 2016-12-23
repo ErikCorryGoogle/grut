@@ -11,7 +11,7 @@ grut.png: grut.dot
 	#open grut.png
 
 grut.ll: grut.dart
-	dart grut.dart -l -e 'a.{2}z$$' > grut.ll
+	dart grut.dart -l -e 'a.{2}z$$' -o grut.ll
 
 grut.S: grut.ll
 	clang -O3 -S grut.ll
