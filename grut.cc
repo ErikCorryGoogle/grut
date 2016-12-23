@@ -11,10 +11,6 @@ struct GrutState {
 
 extern "C" int grut(GrutState* state, const char* s);
 
-extern "C" int match(GrutState* state, const char* s) {
-  return 1;
-}
-
 int main(int argc, const char* const* argv) {
   GrutState state;
   while (--argc) {

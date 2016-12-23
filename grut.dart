@@ -105,7 +105,7 @@ class Range {
     if (code == "]".codeUnitAt(0)) return r"\]";
     if (code < " ".codeUnitAt(0) || code > "~".codeUnitAt(0)) {
       if (code < 0x100)
-	return r"\x" + code.toRadixString(16).padLeft(2, "0");
+        return r"\x" + code.toRadixString(16).padLeft(2, "0");
       return r"\u" + code.toRadixString(16).padLeft(4, "0");
     }
     return new String.fromCharCode(code);
@@ -160,18 +160,18 @@ class CharacterClass extends Ast {
     int prev = 0;
     for (int i = 1; i < ranges.length; i++) {
       if (ranges[prev].to >= ranges[i].from - 1) {
-	if (to_be_removed == null) to_be_removed = new Set<int>();
-	to_be_removed.add(i);
-	ranges[prev].to = max(ranges[prev].to, ranges[i].to);
+        if (to_be_removed == null) to_be_removed = new Set<int>();
+        to_be_removed.add(i);
+        ranges[prev].to = max(ranges[prev].to, ranges[i].to);
       } else {
-	prev = i;
+        prev = i;
       }
     }
     if (to_be_removed != null) {
       List<Range> old = ranges;
       ranges = new List<Range>();
       for (int i = 0; i < old.length; i++)
-	if (!to_be_removed.contains(i)) ranges.add(old[i]);
+        if (!to_be_removed.contains(i)) ranges.add(old[i]);
     }
   }
 
@@ -501,8 +501,8 @@ class Parser {
     if (accept("(")) {
       bool capturing = true;
       if (accept("?")) {
-	expect(":");
-	capturing = false;
+        expect(":");
+        capturing = false;
       }
       Ast ast = parseDisjunction();
       if (capturing) ast = new Capturing(ast);
@@ -526,46 +526,46 @@ class Parser {
     while (!accept("]")) {
       int from, to;
       if (accept(r"\")) {
-	CharacterClass clarse = acceptClassLetter();
+        CharacterClass clarse = acceptClassLetter();
         if (clarse != null) {
-	  c.mergeIn(clarse);
-	  continue;
-	}
-	String ascii = acceptAsciiEscape();
-	if (ascii != null) {
-	  from = ascii.codeUnitAt(0);
-	} else if (accept("")) {
-	  throw "Unexpected end of regexp at $pos";
+          c.mergeIn(clarse);
+          continue;
+        }
+        String ascii = acceptAsciiEscape();
+        if (ascii != null) {
+          from = ascii.codeUnitAt(0);
+        } else if (accept("")) {
+          throw "Unexpected end of regexp at $pos";
         } else {
-	  from = current.codeUnitAt(0);
-	  accept(current);
-	}
+          from = current.codeUnitAt(0);
+          accept(current);
+        }
       } else if (accept("")) {
-	throw "Unexpected end of regexp at $pos";
+        throw "Unexpected end of regexp at $pos";
       } else {
-	from = current.codeUnitAt(0);
-	accept(current);
+        from = current.codeUnitAt(0);
+        accept(current);
       }
       if (!accept("-")) {
-	c.addNumeric(from, from);
-	continue;
+        c.addNumeric(from, from);
+        continue;
       }
       if (accept(r"\")) {
-	if (acceptClassLetter() != null) throw "character class as end of a range at $pos";
+        if (acceptClassLetter() != null) throw "character class as end of a range at $pos";
         String ascii = acceptAsciiEscape();
-	if (ascii != null) {
-	  to = ascii.codeUnitAt(0);
-	} else if (accept("")) {
-	  throw "Unexpected end of regexp at $pos";
+        if (ascii != null) {
+          to = ascii.codeUnitAt(0);
+        } else if (accept("")) {
+          throw "Unexpected end of regexp at $pos";
         } else {
-	  to = current.codeUnitAt(0);
-	  accept(current);
-	}
+          to = current.codeUnitAt(0);
+          accept(current);
+        }
       } else if (accept("")) {
-	throw "Unexpected end of regexp at $pos";
+        throw "Unexpected end of regexp at $pos";
       } else {
-	to = current.codeUnitAt(0);
-	accept(current);
+        to = current.codeUnitAt(0);
+        accept(current);
       }
       if (from > to) throw "Invalid range at $pos";
       c.addNumeric(from, to);
@@ -603,7 +603,7 @@ class Parser {
     if (accept("?")) {
       Ast empty = new EmptyAlternative();
       if (accept("?"))
-	return new Disjunction(empty, ast);  // Non-greedy "?".
+        return new Disjunction(empty, ast);  // Non-greedy "?".
       return new Disjunction(ast, empty);  // Greedy "?".
     }
     if (accept("*")) return new Loop.asterisk(ast, accept("?"));
@@ -686,8 +686,16 @@ class Parser {
   }
 }
 
-void defineTopLevel(State state, String name) {
-  print("define external i32 @grut(%restate_t* %state, i8* %s) {");
+void defineMatch() {
+  // The successor of the regexp, called if the match succeeds.  It just
+  // returns '1' for success.
+  print("define internal i32 @match(%restate_t* %state, i8* %s) {");
+  print("  ret i32 1");
+  print("}");
+}
+
+void defineTopLevel(State state, String symbol, String name) {
+  print("define external i32 @$symbol(%restate_t* %state, i8* %s) {");
   print("  %start_gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0");
   print("  store i8* %s, i8** %start_gep");
   for (int i = 0; i < state.captures; i++) {
@@ -701,22 +709,71 @@ void defineTopLevel(State state, String name) {
   print("  %result = call i32 @$name(%restate_t* %state, i8* %s)");
   print("  ret i32 %result");
   print("}");
+
+}
+
+void usage() {
+  print("Usage: grut");
+  print("  [-e <regexp>]");
+  print("  [-d]           (produce graphviz file)");
+  print("  [-l]           (produce LLVM file)");
+  print("  [-s <symbol>]  (default 'grut')");
 }
 
 int main(List<String> args) {
-  Parser parser = new Parser(r'a.{2}?z$');
+  String source;
+  String topSymbol = "grut";
+  bool dotFile = false;
+  bool llFile = false;
+  for (int i = 0; i < args.length; i++) {
+    switch (args[i]) {
+      case "-e":
+        source = args[++i];
+        break;
+      case "-d":
+        dotFile = true;
+	break;
+      case "-l":
+        llFile = true;
+	break;
+      case "-s":
+        topSymbol = args[++i];
+        break;
+      default:
+	usage();
+	return -1;
+    }
+  }
+  if (!dotFile && !llFile) {
+    print("Specify either -d or -l on the command line");
+    usage();
+    return 1;
+  }
+  if (dotFile && llFile) {
+    print("You can't specify both .ll and .dot files to be output");
+    usage();
+    return 1;
+  }
+  if (source == null) {
+    print("No regexp specified");
+    usage();
+    return 1;
+  }
+
+  Parser parser = new Parser(source);
   Ast ast = parser.parse();
-  if (args[0] == "dot") {
+  if (dotFile) {
     print("Digraph G {");
     ast.dump();
     print("}");
-  } else {
-    print("declare i32 @match(%restate_t* %state, i8* %s)");
+  }
+  if (llFile) {
+    defineMatch();
     State state = new State();
     ast.alloc(state);
     print("%restate_t = type { i8*, [${state.captures} x i8*], [${state.counters} x i32] }");
     ast.gen(state, "match");
-    defineTopLevel(state, ast.name);
+    defineTopLevel(state, topSymbol, ast.name);
   }
   return 0;
 }

@@ -4,14 +4,14 @@ clean:
 	rm -f grut.png grut.S grut.ll grut.o grutdriver.o grut
 
 grut.dot: grut.dart
-	dart grut.dart dot > grut.dot
+	dart grut.dart -d -e 'a.{2}z$$' > grut.dot
 
 grut.png: grut.dot
 	dot -Gdpi=150 -T png -o grut.png grut.dot
 	#open grut.png
 
 grut.ll: grut.dart
-	dart grut.dart gen > grut.ll
+	dart grut.dart -l -e 'a.{2}z$$' > grut.ll
 
 grut.S: grut.ll
 	clang -O3 -S grut.ll
