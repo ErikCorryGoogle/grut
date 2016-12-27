@@ -1,3 +1,6 @@
+test:
+	dart test.dart
+
 all: grut.png grut.o grut
 
 clean:

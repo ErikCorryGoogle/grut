@@ -1,0 +1,28 @@
+# Test rules for the Grut regexp compiler.
+
+# regexp files compiled to LLVM .ll files by the Grut application.
+foo.re -> foo.ll : dart grut.dart -l -o foo.ll -f foo.re
+
+# We are testing against the irregexp implementation in the DartVM, so
+# construct the expect files with those.
+foo.re, foo.bar.input, makeexpect.dart -> foo.bar.expect : dart makeexpect.dart foo.re foo.bar.input foo.bar.expect
+# Multiline version.
+foo.re, foo.bar.minput, makeexpect.dart -> foo.bar.mexpect : dart makeexpect.dart -m foo.re foo.bar.minput foo.bar.mexpect
+
+# LLVM files compiled to object code files by clang.
+foo.ll -> foo.re.o : clang -c -o foo.re.o -O3 foo.ll
+
+# Object code files linked with grutdump.cc to make an executable test file.
+grutdump.cc -> grutdump.o : clang -Wall -Werror -c -o grutdump.o -O3 grutdump.cc
+
+# Object code files linked with grutdump.cc to make an executable test file.
+foo.re.o, grutdump.o -> foo.exe : clang -Wall -Werror -o foo.exe -O3 grutdump.o foo.re.o
+
+# Run a compiled regexp with a given input to generate an output file.
+foo.exe, foo.bar.input -> foo.bar.output : foo.exe foo.bar.input > foo.bar.output
+# Multiline version
+foo.exe, foo.bar.minput -> foo.bar.moutput : foo.exe -m foo.bar.minput > foo.bar.moutput
+
+# Compare the output file with an expected output (with comments removed).
+foo.bar.output, foo.bar.expect -> foo.bar.dummy : cmp -b foo.bar.expect foo.bar.output
+foo.bar.moutput, foo.bar.mexpect -> foo.bar.mdummy : cmp -b foo.bar.mexpect foo.bar.moutput
