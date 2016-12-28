@@ -28,8 +28,8 @@ int main(int argc, const char* const* argv) {
     perror(fn);
     exit(1);
   }
-  static int BUF_SIZ = 65536;
-  char buffer[BUF_SIZ];
+#define BUF_SIZ (4 << 20)
+  static char buffer[BUF_SIZ];
   size_t bytes = fread(buffer, 1, BUF_SIZ, fp);
   if (bytes == BUF_SIZ) {
     fprintf(stderr, "Input too large: %s\n", fn);
