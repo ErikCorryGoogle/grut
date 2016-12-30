@@ -49,7 +49,7 @@ int main(int argc, const char* const* argv) {
   }
   if (multiline) {
     while (true) {
-      char* newline = strchr(input, '\n');
+      char* newline = const_cast<char*>(strchr(input, '\n'));
       if (newline != 0) *newline = '\0';
       if (grut(&state, input)) {
 	// Successful regexp match.  We don't record captures yet, so assume the

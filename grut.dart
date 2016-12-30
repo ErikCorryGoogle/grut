@@ -24,7 +24,7 @@ abstract class Ast {
     if (!(s is String)) throw "toString failure: $s";
     // Escape for .dot format.
     if (s.contains("\\") || s.contains('"'))
-      s = s.replaceAllMapped(new RegExp(r'[\\"]'), (Match m) => "\\${m[0]}");
+      s = s.replaceAllMapped(new RegExp(r'[\\"]'), (m) => "\\${m[0]}");
     print('"$name" [label="$s"];');
   }
   // Prints the .ll (LLVM ASCII bitcode) code for this node.  Each regexp AST

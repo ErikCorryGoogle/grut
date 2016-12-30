@@ -7,8 +7,8 @@ RegExp meta = new RegExp(r"(foo|bar|baz|fizz|buzz)");
 class Asset {
   Asset(this.filename);
   String filename;
-  List<Asset> downstream = new List<Asset>();
-  List<Asset> upstream = new List<Asset>();
+  List<Asset> downstream = [];
+  List<Asset> upstream = [];
   String command;
   Rule rule;
   Status status = Status.MISSING;
@@ -76,11 +76,11 @@ class RulePart {
 RegExp escapeRegExp = new RegExp("[^a-zA-Z0-9_-]");
 
 String regExpEscape(String s) {
-  return s.splitMapJoin(escapeRegExp, onMatch: (Match m) => "\\${m[0]}");
+  return s.splitMapJoin(escapeRegExp, onMatch: (m) => "\\${m[0]}");
 }
 
 List<RulePart> parseMeta(String unparsed, RegExp keywords) {
-  List<RulePart> parts = new List<RulePart>();
+  List<RulePart> parts = [];
   while (true) {
     Match m = keywords.firstMatch(unparsed);
     if (m == null) break;
@@ -106,12 +106,12 @@ class WildcardName {
     parts = parseMeta(unparsed, meta);
     regexp = metaRegExp(parts);
   }
-  List<RulePart> parts = new List<RulePart>();
+  List<RulePart> parts = [];
   String unparsed;
   RegExp regexp;
   // Finding a file that matches this name means we can generate the name of the
   // other files for a rule.
-  Set<Rule> rulesWeGenerate = new Set<Rule>();
+  Set<Rule> rulesWeGenerate = new Set();
   bool get generates => rulesWeGenerate.length != 0;
 }
 
@@ -122,8 +122,8 @@ class Rule {
     parts = parseMeta(command, commandRegExp);
     inputsAndOutput = new List.from(inputs);
     inputsAndOutput.add(output);
-    Set<String> inVars = new Set<String>();
-    Set<String> outVars = new Set<String>();
+    Set<String> inVars = new Set();
+    Set<String> outVars = new Set();
     for (WildcardName name in inputs) {
       for (RulePart part in name.parts)
         if (part.variable != null) inVars.add(part.variable);
@@ -136,7 +136,7 @@ class Rule {
       throw "Variables in the output are missing in the input of $line";
     bool covers(WildcardName coverer, Set<String> vars) {
       for (String v in vars) {
-        if (!coverer.parts.any((RulePart part) => part.variable == v))
+        if (!coverer.parts.any((part) => part.variable == v))
           return false;
       }
       return true;
@@ -153,10 +153,10 @@ class Rule {
   }
   RegExp getCommandRegExp() {
     List<String> nameStrings =
-        inputs.map((WildcardName name) => name.unparsed).toList();
+        inputs.map((name) => name.unparsed).toList();
     nameStrings.add(output.unparsed);
     String core =
-        nameStrings.map((String s) => regExpEscape(s)).join(r"\b)|(?:\b");
+        nameStrings.map((s) => regExpEscape(s)).join(r"\b)|(?:\b");
     return new RegExp("((?:$core))");
   }
 
@@ -170,7 +170,7 @@ class Rule {
 }
 
 List<Rule> getRules(Set<WildcardName> triggers) {
-  List<Rule> rules = new List<Rule>();
+  List<Rule> rules = [];
   File file = new File("tests/rules.txt");
   List<String> lines = file.readAsLinesSync();
   RegExp splitter = new RegExp(
@@ -198,11 +198,11 @@ List<Rule> getRules(Set<WildcardName> triggers) {
 
 Map<String, Asset> getAssets(
     List<Rule> rules, List<Asset> sourceAssets, Set<WildcardName> triggers) {
-  Map<String, Asset> directory = new Map<String, Asset>();
+  Map<String, Asset> directory = new Map();
   // Enter all test source files into the system.
   Directory dir = new Directory("tests");
   List<FileSystemEntity> entries = dir.listSync();
-  List<String> filenames = new List<String>();
+  List<String> filenames = [];
   for (FileSystemEntity entity in entries) {
     if (!(entity is File)) continue;
     String path = entity.path;
@@ -258,7 +258,7 @@ Map<String, Asset> getAssets(
 }
 
 Map<String, String> getVars(WildcardName template, Match m) {
-  Map<String, String> vars = new Map<String, String>();
+  Map<String, String> vars = new Map();
   int i = 1;
   for (RulePart part in template.parts) {
     if (part.variable != null) vars[part.variable] = m[i++];
@@ -267,7 +267,7 @@ Map<String, String> getVars(WildcardName template, Match m) {
 }
 
 String build(List<RulePart> parts, String vars(String)) {
-  List<String> result = new List<String>();
+  List<String> result = [];
   for (RulePart part in parts) {
     result.add(part.literal);
     if (part.variable != null) result.add(vars(part.variable));
@@ -277,7 +277,7 @@ String build(List<RulePart> parts, String vars(String)) {
 
 String addPatternMatchedAsset(Map<String, Asset> directory,
     List<String> filenames, WildcardName other, Map<String, String> vars) {
-  String otherName = build(other.parts, (String s) => vars[s]);
+  String otherName = build(other.parts, (s) => vars[s]);
   String checkedInName = "tests/$otherName";
   String generatedName = "out/$otherName";
   String otherPath;
@@ -294,7 +294,7 @@ String addPatternMatchedAsset(Map<String, Asset> directory,
 }
 
 void runTests(Map<String, Asset> directory, List<Asset> sourceAssets) {
-  List<Asset> work = new List<Asset>();
+  List<Asset> work = [];
   for (Asset src in sourceAssets) {
     for (Asset down in src.downstream) {
       down.upStreamNowAvailable(work);
@@ -312,9 +312,9 @@ void runTests(Map<String, Asset> directory, List<Asset> sourceAssets) {
 }
 
 int main() {
-  Set<WildcardName> triggers = new Set<WildcardName>();
+  Set<WildcardName> triggers = new Set();
   List<Rule> rules = getRules(triggers);
-  List<Asset> sourceAssets = new List<Asset>();
+  List<Asset> sourceAssets = [];
   Map<String, Asset> directory = getAssets(rules, sourceAssets, triggers);
   runTests(directory, sourceAssets);
   return 0;

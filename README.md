@@ -2,9 +2,9 @@
 
 A hacky regexp compiler that generates machine code for regexp matching,
 originally written for a talk at the Yow! conference in Sydney 2016.  Requires
-Dart language and Clang.  Try out with:
+Dart language and Clang 3.8 or newer.  Try out with:
 ```
-make
+make all
 ./grut /usr/share/dict/words
 ```
 Features:
@@ -19,4 +19,4 @@ Known issues:
 * Counted loops inside loops won't count right.  Eg (ab+c)*
 * No Unicode support.
 * Large input strings can overflow the stack when matching.
-* No tests.
+* Few tests.
