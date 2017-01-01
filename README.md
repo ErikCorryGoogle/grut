@@ -9,9 +9,9 @@ make all
 ```
 Features:
 * Regexp style is backtracking.
-* Supports .()^$ and literals. Greedy and non-greedy ?*+{}, [] char classes
+* Supports .()^$ and literals. Greedy and non-greedy ?*+{}, [] char classes and look-aheads.
 * No support for \b (word boundary).
-* No support for back-references, look-aheads and look-behinds.
+* No support for back-references or look-behinds.
 
 Known issues:
 * Can't match a null character, and expects a null terminated string.

@@ -15,7 +15,7 @@ static void dump(GrutState* state, int capturePairs) {
   printf("«%s»\n", state->captures_and_registers[0]);
   for (int i = 2; i < capturePairs; i += 2) {
     if (state->captures_and_registers[i] == nullptr) {
-      printf("%d: «»\n", i >> 1);
+      printf("%d: «null»\n", i >> 1);
     } else {
       char* end = state->captures_and_registers[i + 1];
       char saved = *end;

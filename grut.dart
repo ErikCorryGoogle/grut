@@ -13,6 +13,7 @@ abstract class Ast {
   String name = "f${ctr++}";
   int get minWidth;
   int get maxWidth;
+  void collect(List<int> captures) {}
 
   void _(State state, Object o) {
     state.out.writeln(o);
@@ -63,6 +64,10 @@ abstract class BinaryAst extends Ast {
   void alloc(State state) {
     l.alloc(state);
     r.alloc(state);
+  }
+  void collect(List<int> captures) {
+    l.collect(captures);
+    r.collect(captures);
   }
 }
 
@@ -375,6 +380,35 @@ abstract class UnaryAst extends Ast {
     maxWidthIsCalculated = true;
     return maxWidthCached = ast.maxWidth;
   }
+  void collect(List<int> captures) {
+    ast.collect(captures);
+  }
+}
+
+class Lookahead extends UnaryAst {
+  Lookahead(Ast ast, this.sense) : super(ast);
+  void gen(State s, String succ) {
+    _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
+    _(s, "  %result = call i32 @${ast.name}(%restate_t* %state, i8* %s)");
+    _(s, "  %comparison = icmp ${sense ? "ne" : "eq"} i32 %result, 0");
+    _(s, "  br i1 %comparison, label %ok, label %failed");
+    _(s, "failed:");
+    _(s, "  ret i32 0");
+    _(s, "ok:");
+    if (!sense) {
+      List<int> captures = [];
+      ast.collect(captures);
+      for (int capture in captures) {
+	_(s, "  %gep$capture = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $capture");
+	_(s, "  store i8* null, i8** %gep$capture");
+      }
+    }
+    _(s, "  %result2 = call i32 @$succ(%restate_t* %state, i8* %s)");
+    _(s, "  ret i32 %result2");
+    _(s, "}");
+    ast.gen(s, "match");
+  }
+  bool sense;
 }
 
 class Capturing extends UnaryAst {
@@ -412,6 +446,10 @@ class Capturing extends UnaryAst {
     capture_register = state.captures;
     state.captures += 2;
     ast.alloc(state);
+  }
+  void collect(List<int> captures) {
+    captures.add(capture_register);
+    ast.collect(captures);
   }
   String toString() => "($ast)";
   bool isAnchored() => ast.isAnchored();
@@ -542,12 +580,23 @@ class Parser {
   Ast parseAtom() {
     if (accept("(")) {
       bool capturing = true;
+      bool lookahead = false;
+      bool lookaheadSense;
       if (accept("?")) {
-        expect(":");
-        capturing = false;
+	if (accept("=")) {
+	  lookahead = true;
+	  lookaheadSense = true;
+	} else if (accept("!")) {
+	  lookahead = true;
+	  lookaheadSense = false;
+	} else {
+	  expect(":");
+	}
+	capturing = false;
       }
       Ast ast = parseDisjunction();
       if (capturing) ast = new Capturing(ast);
+      if (lookahead) ast = new Lookahead(ast, lookaheadSense);
       expect(")");
       return ast;
     }
