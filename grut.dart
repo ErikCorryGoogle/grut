@@ -182,6 +182,17 @@ class CharacterClass extends Ast {
     }
   }
 
+  void negate() {
+    int endOfLast = 1;  // Even a negated character class cannot match a null character.
+    List<Range> negated = [];
+    for (Range range in ranges) {
+      if (range.from > endOfLast) negated.add(new Range(endOfLast, range.from - 1));
+      endOfLast = range.to + 1;
+    }
+    if (endOfLast < 256) negated.add(new Range(endOfLast, 255));
+    ranges = negated;
+  }
+
   void gen(State s, String successor) {
     _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
     _(s, "  %c = load i8, i8* %s, align 1");
@@ -547,6 +558,7 @@ class Parser {
     if (accept("*") || accept("?") || accept("+") || accept("{"))
       throw "Unexpected quantifier at $pos";
     // TODO: Should we (unlike Dart and JS) disallow a bare ']' here?
+    if (current.codeUnitAt(0) == 0) throw "Can't allow null characters in a Grut regexp";
     Ast ast = new Literal(current);
     accept(current);
     return ast;
@@ -554,6 +566,7 @@ class Parser {
 
   Ast parseCharClass() {
     CharacterClass c = new CharacterClass();
+    bool negated = accept("^");
     while (!accept("]")) {
       int from, to;
       if (accept(r"\")) {
@@ -568,12 +581,14 @@ class Parser {
         } else if (accept("")) {
           throw "Unexpected end of regexp at $pos";
         } else {
+	  if (current.codeUnitAt(0) == 0) throw "Can't allow null characters in a Grut regexp";
           from = current.codeUnitAt(0);
           accept(current);
         }
       } else if (accept("")) {
         throw "Unexpected end of regexp at $pos";
       } else {
+	if (current.codeUnitAt(0) == 0) throw "Can't allow null characters in a Grut regexp";
         from = current.codeUnitAt(0);
         accept(current);
       }
@@ -589,12 +604,14 @@ class Parser {
         } else if (accept("")) {
           throw "Unexpected end of regexp at $pos";
         } else {
+	  if (current.codeUnitAt(0) == 0) throw "Can't allow null characters in a Grut regexp";
           to = current.codeUnitAt(0);
           accept(current);
         }
       } else if (accept("")) {
         throw "Unexpected end of regexp at $pos";
       } else {
+	if (current.codeUnitAt(0) == 0) throw "Can't allow null characters in a Grut regexp";
         to = current.codeUnitAt(0);
         accept(current);
       }
@@ -602,6 +619,7 @@ class Parser {
       c.addNumeric(from, to);
     }
     c.sortMerge();
+    if (negated) c.negate();
     return c;
   }
 
@@ -627,6 +645,7 @@ class Parser {
         current.codeUnitAt(0) <= 'Z'.codeUnitAt(0)) throw "Unsupported escape at $pos";
     if (current.codeUnitAt(0) >= '0'.codeUnitAt(0) &&
         current.codeUnitAt(0) <= '9'.codeUnitAt(0)) throw "Unsupported escape at $pos";
+    if (current.codeUnitAt(0) == 0) throw "Can't allow null characters in a Grut regexp";
     Ast ast = new Literal(current);
     accept(current);
     return ast;

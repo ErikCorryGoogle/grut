@@ -9,8 +9,8 @@ make all
 ```
 Features:
 * Regexp style is backtracking.
-* Supports .()^$ and literals. Greedy and non-greedy ?*+{}.
-* No support for negated character classes [^...] or \b (word boundary).
+* Supports .()^$ and literals. Greedy and non-greedy ?*+{}, [] char classes
+* No support for \b (word boundary).
 * No support for back-references, look-aheads and look-behinds.
 
 Known issues:
