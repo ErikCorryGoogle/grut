@@ -22,7 +22,7 @@ int main(List<String> args) {
       output.add("");
     } else {
       output.add("«${m[0]}»");
-      for (int i = 1; i < m.groupCount; i++)
+      for (int i = 1; i < m.groupCount + 1; i++)
 	output.add("$i: «${m[i]}»");
     }
   }

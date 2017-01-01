@@ -13,7 +13,7 @@ foo.re, foo.bar.minput, makeexpect.dart -> foo.bar.mexpect : dart makeexpect.dar
 foo.ll -> foo.re.o : clang -c -o foo.re.o -O3 foo.ll
 
 # Object code files linked with grutdump.cc to make an executable test file.
-grutdump.cc -> grutdump.o : clang -Wall -Werror -c -o grutdump.o -O3 grutdump.cc
+grutdump.cc -> grutdump.o : clang -std=c++11 -Wall -Werror -c -o grutdump.o -O3 grutdump.cc
 
 # Object code files linked with grutdump.cc to make an executable test file.
 foo.re.o, grutdump.o -> foo.exe : clang -Wall -Werror -o foo.exe -O3 grutdump.o foo.re.o
@@ -23,6 +23,6 @@ foo.exe, foo.bar.input -> foo.bar.output : foo.exe foo.bar.input > foo.bar.outpu
 # Multiline version
 foo.exe, foo.bar.minput -> foo.bar.moutput : foo.exe -m foo.bar.minput > foo.bar.moutput
 
-# Compare the output file with an expected output (with comments removed).
+# Compare the output file with an expected output.
 foo.bar.output, foo.bar.expect -> foo.bar.dummy : cmp -b foo.bar.expect foo.bar.output
-foo.bar.moutput, foo.bar.mexpect -> foo.bar.mdummy : cmp -b foo.bar.mexpect foo.bar.moutput
+foo.bar.moutput, foo.bar.mexpect -> foo.bar.mdummy : diff -u foo.bar.mexpect foo.bar.moutput

@@ -370,9 +370,32 @@ class Capturing extends UnaryAst {
   Capturing(Ast ast) : super(ast);
   int capture_register;
   // TODO: Set registers when capturing.
-  void gen(State state, String succ) {
-    forward(state, ast.name);
-    ast.gen(state, succ);
+  void gen(State s, String succ) {
+    _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
+    _(s, "  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 ${capture_register}");
+    _(s, "  store i8* %s, i8** %gep");
+    _(s, "  %result = call i32 @${ast.name}(%restate_t* %state, i8* %s)");
+    _(s, "  %comparison = icmp eq i32 %result, 0");
+    _(s, "  br i1 %comparison, label %failed, label %ok");
+    _(s, "failed:");
+    _(s, "  store i8* null, i8** %gep");
+    _(s, "  ret i32 %result");
+    _(s, "ok:");
+    _(s, "  ret i32 %result");
+    _(s, "}");
+    _(s, "define internal i32 @${name}_close(%restate_t* %state, i8* %s) {");
+    _(s, "  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 ${capture_register + 1}");
+    _(s, "  store i8* %s, i8** %gep");
+    _(s, "  %result = call i32 @$succ(%restate_t* %state, i8* %s)");
+    _(s, "  %comparison = icmp eq i32 %result, 0");
+    _(s, "  br i1 %comparison, label %failed, label %ok");
+    _(s, "failed:");
+    _(s, "  store i8* null, i8** %gep");
+    _(s, "  ret i32 %result");
+    _(s, "ok:");
+    _(s, "  ret i32 %result");
+    _(s, "}");
+    ast.gen(s, "${name}_close");
   }
   void alloc(State state) {
     capture_register = state.captures;
@@ -496,6 +519,7 @@ class Parser {
     getToken();
     Ast ast = parseDisjunction();
     expect("");
+    ast = new Capturing(ast);  // Implicit 0th capture is whole match.
     if (!ast.isAnchored()) {
       // For non-sticky regexps (which is the only thing we support) we prepend
       // a non-greedy loop).
@@ -704,6 +728,11 @@ void defineMatch(IOSink out) {
 void defineTopLevel(State state, String symbol, String name) {
   IOSink out = state.out;
   out.writeln("define external i32 @$symbol(%restate_t* %state, i8* %s) {");
+  out.writeln("  %comparison = icmp eq i8* null, %s");
+  out.writeln("  br i1 %comparison, label %getmetadata, label %matchstring");
+  out.writeln("getmetadata:");
+  out.writeln("  ret i32 ${state.captures}");
+  out.writeln("matchstring:");
   out.writeln("  %start_gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0");
   out.writeln("  store i8* %s, i8** %start_gep");
   for (int i = 0; i < state.captures; i++) {

@@ -5,10 +5,26 @@
 struct GrutState {
   char* start_of_string;
   // TODO: We need to handle the correct sizing of this.
-  int captures_and_registers[32];
+  char* captures_and_registers[32];
 };
 
 extern "C" int grut(GrutState* state, const char* s);
+
+static void dump(GrutState* state, int capturePairs) {
+  *state->captures_and_registers[1] = '\0';
+  printf("«%s»\n", state->captures_and_registers[0]);
+  for (int i = 2; i < capturePairs; i += 2) {
+    if (state->captures_and_registers[i] == nullptr) {
+      printf("%d: «»\n", i >> 1);
+    } else {
+      char* end = state->captures_and_registers[i + 1];
+      char saved = *end;
+      *end = '\0';
+      printf("%d: «%s»\n", i >> 1, state->captures_and_registers[i]);
+      *end = saved;
+    }
+  }
+}
 
 int main(int argc, const char* const* argv) {
   bool multiline = false;
@@ -47,25 +63,22 @@ int main(int argc, const char* const* argv) {
     // to add a newline to the last line,
     if (buffer[bytes - 1] == '\n') buffer[bytes - 1] = '\0';
   }
+  int capturePairs = grut(nullptr, nullptr);
   if (multiline) {
     while (true) {
       char* newline = const_cast<char*>(strchr(input, '\n'));
-      if (newline != 0) *newline = '\0';
+      if (newline != nullptr) *newline = '\0';
       if (grut(&state, input)) {
-	// Successful regexp match.  We don't record captures yet, so assume the
-	// whole string matched and that there are no captures.
-	printf("«%s»\n", input);
+	dump(&state, capturePairs);
       } else {
 	printf("\n");
       }
-      if (newline == 0) break;
+      if (newline == nullptr) break;
       input = newline + 1;
     }
   } else {
     if (grut(&state, input)) {
-      // Successful regexp match.  We don't record captures yet, so assume the
-      // whole string matched and that there are no captures.
-      printf("«%s»\n", input);
+      dump(&state, capturePairs);
     }
   }
   return 0;
