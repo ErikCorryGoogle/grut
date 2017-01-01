@@ -123,10 +123,10 @@ class CharacterClass extends Ast {
   CharacterClass();
   CharacterClass.digit() { add("0", "9"); }
   CharacterClass.word() {
-    add("A", "Z");
-    add("a", "z");
     add("0", "9");
+    add("A", "Z");
     add("_", "_");
+    add("a", "z");
   }
   CharacterClass.whiteSpace() {
     add("\t", "\r");
@@ -621,6 +621,12 @@ class Parser {
     CharacterClass clarse = acceptClassLetter();
     if (clarse != null) return clarse;
     if (accept("")) throw "Unexpected end of regexp at $pos";
+    if (current.codeUnitAt(0) >= 'a'.codeUnitAt(0) &&
+        current.codeUnitAt(0) <= 'z'.codeUnitAt(0)) throw "Unsupported escape at $pos";
+    if (current.codeUnitAt(0) >= 'A'.codeUnitAt(0) &&
+        current.codeUnitAt(0) <= 'Z'.codeUnitAt(0)) throw "Unsupported escape at $pos";
+    if (current.codeUnitAt(0) >= '0'.codeUnitAt(0) &&
+        current.codeUnitAt(0) <= '9'.codeUnitAt(0)) throw "Unsupported escape at $pos";
     Ast ast = new Literal(current);
     accept(current);
     return ast;
