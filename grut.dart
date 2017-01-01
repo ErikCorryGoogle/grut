@@ -546,7 +546,7 @@ class Parser {
     if (accept("[")) return parseCharClass();
     if (accept("*") || accept("?") || accept("+") || accept("{"))
       throw "Unexpected quantifier at $pos";
-    if (accept("]")) throw "Unexpected ] at $pos";
+    // TODO: Should we (unlike Dart and JS) disallow a bare ']' here?
     Ast ast = new Literal(current);
     accept(current);
     return ast;
