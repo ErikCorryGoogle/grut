@@ -558,16 +558,38 @@ class Loop extends UnaryAst {
   }
 }
 
+class ParseError {
+  ParseError(this.string, this.pos);
+  String string;
+  int pos;
+}
+
 class Parser {
   Parser(this.src);
   String src;
   int pos = 0;
   String current;
 
+  void die(String s) {
+    throw new ParseError(s, pos);
+  }
+
+  void checkForNull() {
+    if (current.codeUnitAt(0) == 0) die("Can't allow null characters in a Grut regexp");
+  }
+
   Ast parse() {
     getToken();
-    Ast ast = parseDisjunction();
-    expect("");
+    Ast ast;
+    try {
+      ast = parseDisjunction();
+      expect("");
+    } on ParseError catch (error) {
+      stderr.writeln("Grut error: ${error.string} at ${error.pos}");
+      stderr.writeln(src);
+      stderr.writeln("^".padLeft(error.pos + 1, " "));
+      return null;
+    }
     ast = new Capturing(ast);  // Implicit 0th capture is whole match.
     if (!ast.isAnchored()) {
       // For non-sticky regexps (which is the only thing we support) we prepend
@@ -605,9 +627,9 @@ class Parser {
     if (accept("\\")) return parseEscape();
     if (accept("[")) return parseCharClass();
     if (accept("*") || accept("?") || accept("+") || accept("{"))
-      throw "Unexpected quantifier at $pos";
+      die("Unexpected quantifier");
     // TODO: Should we (unlike Dart and JS) disallow a bare ']' here?
-    if (current.codeUnitAt(0) == 0) throw "Can't allow null characters in a Grut regexp";
+    checkForNull();
     Ast ast = new Literal(current);
     accept(current);
     return ast;
@@ -628,16 +650,16 @@ class Parser {
         if (ascii != null) {
           from = ascii.codeUnitAt(0);
         } else if (accept("")) {
-          throw "Unexpected end of regexp at $pos";
+          die("Unexpected end of regexp");
         } else {
-	  if (current.codeUnitAt(0) == 0) throw "Can't allow null characters in a Grut regexp";
+	  checkForNull();
           from = current.codeUnitAt(0);
           accept(current);
         }
       } else if (accept("")) {
-        throw "Unexpected end of regexp at $pos";
+	die("Unexpected end of regexp");
       } else {
-	if (current.codeUnitAt(0) == 0) throw "Can't allow null characters in a Grut regexp";
+	checkForNull();
         from = current.codeUnitAt(0);
         accept(current);
       }
@@ -646,25 +668,25 @@ class Parser {
         continue;
       }
       if (accept(r"\")) {
-        if (acceptClassLetter() != null) throw "character class as end of a range at $pos";
+        if (acceptClassLetter() != null) die("Character class as end of a range");
         String ascii = acceptAsciiEscape();
         if (ascii != null) {
           to = ascii.codeUnitAt(0);
         } else if (accept("")) {
-          throw "Unexpected end of regexp at $pos";
+	  die("Unexpected end of regexp");
         } else {
-	  if (current.codeUnitAt(0) == 0) throw "Can't allow null characters in a Grut regexp";
+	  checkForNull();
           to = current.codeUnitAt(0);
           accept(current);
         }
       } else if (accept("")) {
-        throw "Unexpected end of regexp at $pos";
+	die("Unexpected end of regexp");
       } else {
-	if (current.codeUnitAt(0) == 0) throw "Can't allow null characters in a Grut regexp";
+	checkForNull();
         to = current.codeUnitAt(0);
         accept(current);
       }
-      if (from > to) throw "Invalid range at $pos";
+      if (from > to) die("Invalid range");
       c.addNumeric(from, to);
     }
     c.sortMerge();
@@ -687,14 +709,14 @@ class Parser {
     if (ascii != null) return new Literal.named(ascii, "\\$char");
     CharacterClass clarse = acceptClassLetter();
     if (clarse != null) return clarse;
-    if (accept("")) throw "Unexpected end of regexp at $pos";
+    if (accept("")) die("Unexpected end of regexp");
     if (current.codeUnitAt(0) >= 'a'.codeUnitAt(0) &&
-        current.codeUnitAt(0) <= 'z'.codeUnitAt(0)) throw "Unsupported escape at $pos";
+        current.codeUnitAt(0) <= 'z'.codeUnitAt(0)) die("Unsupported escape");
     if (current.codeUnitAt(0) >= 'A'.codeUnitAt(0) &&
-        current.codeUnitAt(0) <= 'Z'.codeUnitAt(0)) throw "Unsupported escape at $pos";
+        current.codeUnitAt(0) <= 'Z'.codeUnitAt(0)) die("Unsupported escape");
     if (current.codeUnitAt(0) >= '0'.codeUnitAt(0) &&
-        current.codeUnitAt(0) <= '9'.codeUnitAt(0)) throw "Unsupported escape at $pos";
-    if (current.codeUnitAt(0) == 0) throw "Can't allow null characters in a Grut regexp";
+        current.codeUnitAt(0) <= '9'.codeUnitAt(0)) die("Unsupported escape");
+    checkForNull();
     Ast ast = new Literal(current);
     accept(current);
     return ast;
@@ -719,7 +741,7 @@ class Parser {
       // .{2,3} - Between two and three matches.
       int min = expectNumber();
       int max = accept(",") ? acceptNumber() : min;
-      if (max != null && max < min) throw "min must be <= max at $pos";
+      if (max != null && max < min) die("min must be <= max");
       expect("}");
       return new Loop(ast, min, max, accept("?"));
     }
@@ -752,7 +774,7 @@ class Parser {
   }
 
   void expect(String token) {
-    if (token != current) throw "Expected '$token', found '$current' at $pos";
+    if (token != current) die("Expected '$token', found '$current'");
     getToken();
   }
 
@@ -764,7 +786,7 @@ class Parser {
 
   int expectNumber() {
     int result = acceptNumber();
-    if (result == null) throw "Expected number, found '$current' at $pos";
+    if (result == null) die("Expected number, found '$current'");
     return result;
   }
 
@@ -832,7 +854,7 @@ void usage() {
   stderr.writeln("  [-s <symbol>]       (default 'grut')");
 }
 
-int main(List<String> args) {
+void main(List<String> args) {
   String source;
   String topSymbol = "grut";
   String filename;
@@ -861,28 +883,33 @@ int main(List<String> args) {
         break;
       default:
 	usage();
-	return -1;
+	exitCode = 1;
+	return;
     }
   }
   if (!dotFile && !llFile) {
     stderr.writeln("Specify either -d or -l on the command line");
     usage();
-    return 1;
+    exitCode = 1;
+    return;
   }
   if (dotFile && llFile && filename == null) {
     stderr.writeln("You can't specify both .ll and .dot files to be output to stdout");
     usage();
-    return 1;
+    exitCode = 1;
+    return;
   }
   if (source == null) {
     stderr.writeln("No regexp specified");
     usage();
-    return 1;
+    exitCode = 1;
+    return;
   }
 
   if (dotFile) {
     Parser parser = new Parser(source);
     Ast ast = parser.parse();
+    if (ast == null) return 1;
     print("Digraph G {");
     ast.dump();
     print("}");
@@ -900,6 +927,10 @@ int main(List<String> args) {
 void llvmCodeGen(IOSink out, String source, String topSymbol) {
   Parser parser = new Parser(source);
   Ast ast = parser.parse();
+  if (ast == null) {
+    exitCode = 1;
+    return;
+  }
   State state = new State(out);
   defineMatch(out);
   ast.alloc(state);

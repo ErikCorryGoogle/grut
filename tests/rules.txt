@@ -26,3 +26,6 @@ foo.exe, foo.bar.minput -> foo.bar.moutput : foo.exe -m foo.bar.minput > foo.bar
 # Compare the output file with an expected output.
 foo.bar.output, foo.bar.expect -> foo.bar.dummy : cmp -b foo.bar.expect foo.bar.output
 foo.bar.moutput, foo.bar.mexpect -> foo.bar.mdummy : diff -u foo.bar.mexpect foo.bar.moutput
+
+# Regexps with parser errors in them are covered by a negative rule (! instead of : in the rule)
+foo.bad-re -> foo.errormessage.txt ! dart grut.dart -l -o /dev/null -f foo.bad-re 2> foo.errormessage.txt

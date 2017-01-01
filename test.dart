@@ -48,10 +48,11 @@ class Asset {
 
   void run(List<Asset> work) {
     stdout.write(".");
+    bool failing = rule.failing;
     if (command == null) generateCommand();
-    ProcessResult result = Process.runSync("sh", <String>["-c", command]);
-    if (result.exitCode != 0) {
-      print("\n           +++ FAILED +++");
+    ProcessResult result = Process.runSync("sh", <String>["-c", "-e", command]);
+    if (failing != (result.exitCode != 0)) {
+      print("\n           +++ FAILED ${failing ? 'to fail ' : ''} - exit code ${result.exitCode} +++");
       printInputCommands();
       print(
           "           +++ (last command failed - others build prerequisites) +++");
@@ -116,7 +117,7 @@ class WildcardName {
 }
 
 class Rule {
-  Rule(this.inputs, this.output, this.command, String line) {
+  Rule(this.inputs, this.output, this.command, this.failing, String line) {
     RegExp commandRegExp = getCommandRegExp();
 
     parts = parseMeta(command, commandRegExp);
@@ -167,6 +168,7 @@ class Rule {
   List<RulePart> parts;
   WildcardName output;
   String command;
+  bool failing;
 }
 
 List<Rule> getRules(Set<WildcardName> triggers) {
@@ -174,7 +176,7 @@ List<Rule> getRules(Set<WildcardName> triggers) {
   File file = new File("tests/rules.txt");
   List<String> lines = file.readAsLinesSync();
   RegExp splitter = new RegExp(
-      r"^\s*([^,:\s]+(?:\s*,\s*[^,:\s]+)*)\s*(?:->|→)\s([^,:\s]+)\s*:\s*(.*)$");
+      r"^\s*([^,:\s]+(?:\s*,\s*[^,:\s]+)*)\s*(?:->|→)\s([^,:!\s]+)\s*([:!])\s*(.*)$");
   RegExp prereq_splitter = new RegExp(r"\s*,\s*");
   int lineNumber = 0;
   for (String line in lines) {
@@ -185,11 +187,12 @@ List<Rule> getRules(Set<WildcardName> triggers) {
     if (m == null) throw "Syntax error at line $lineNumber: $line";
     String prerequisites = m[1];
     String result = m[2];
-    String command = m[3];
+    bool failing = m[3] == "!";
+    String command = m[4];
     List<String> pres = prerequisites.split(prereq_splitter);
     List<WildcardName> inputs = pres.map((x) => new WildcardName(x)).toList();
     WildcardName output = new WildcardName(result);
-    Rule rule = new Rule(inputs, output, command, line);
+    Rule rule = new Rule(inputs, output, command, failing, line);
     rules.add(rule);
     for (WildcardName name in inputs) if (name.generates) triggers.add(name);
   }
