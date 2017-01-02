@@ -16,6 +16,5 @@ Features:
 Known issues:
 * Can't match a null character, and expects a null terminated string.
 * Doesn't avoid zero length matches in loops, so it can hang on zero length loop bodies like (a?)* (see note 4 in section 15.10.2.5 of https://www.ecma-international.org/ecma-262/5.1/ ).
-* Counted non-greedy loops inside loops won't count right.  Eg (ab+c)*?
 * No Unicode support.
 * Large input strings can overflow the stack when matching.

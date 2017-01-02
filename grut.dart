@@ -480,22 +480,29 @@ class Loop extends UnaryAst {
   // body, the loop itself is the successor - despite the name "Loop", we are
   // implementing this using recursion.
   void gen(State s, String succ) {
+    List<int> savedCounters;
     String first_call = greedy ? ast.name : succ;
     String second_call = greedy ? succ : ast.name;
     _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
     if (counted) genPreCounter(s);
-    if (greedy) saveCounters(s);
+    if (greedy) savedCounters = saveCounters(s);
     _(s, "  %result = call i32 @$first_call(%restate_t* %state, i8* %s)");
     if (counted && greedy) _(s, "  store i32 %counter, i32* %gep");
     _(s, "  %comparison = icmp eq i32 %result, 0");
     _(s, "  br i1 %comparison, label %failed, label %ok");
     _(s, "failed:");
-    if (greedy) restoreCounters(s);
+    if (greedy) restoreCounters(s, savedCounters);
     if (counted) genPostCounter(s);
-    if (!greedy) saveCounters(s);
+    if (!greedy) savedCounters = saveCounters(s);
     _(s, "  %succ = call i32 @$second_call(%restate_t* %state, i8* %s)");
-    // TODO:  This is not restoring in the right place.
-    if (!greedy) restoreCounters(s);
+    if (!greedy && savedCounters.length != 0) {
+      _(s, "  %comparison2 = icmp eq i32 %succ, 0");
+      _(s, "  br i1 %comparison2, label %failed2, label %ok2");
+      _(s, "failed2:");
+      restoreCounters(s, savedCounters);
+      _(s, "  br label %ok2");
+      _(s, "ok2:");
+    }
     if (counted && !greedy) _(s, "  store i32 %counter, i32* %gep");
     _(s, "  ret i32 %succ");
     _(s, "ok:");
@@ -505,7 +512,7 @@ class Loop extends UnaryAst {
   }
   // The counters and captures for inner loops have to be reset to 0 when we
   // start this outer loop, but we save the old values in case we backtrack.
-  void saveCounters(State s) {
+  List<int> saveCounters(State s) {
     List<int> regs = [];
     ast.collect(regs, false);
     for (int reg in regs) {
@@ -522,10 +529,9 @@ class Loop extends UnaryAst {
 	_(s, "  store i32 0, i32* %gep_count$count");
       }
     }
+    return regs;
   }
-  void restoreCounters(State s) {
-    List<int> regs = [];
-    ast.collect(regs, false);
+  void restoreCounters(State s, List<int> regs) {
     for (int reg in regs) {
       if (reg >= 0) {
 	for (int i = reg; i < reg + 2; i++) {
