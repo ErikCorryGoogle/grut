@@ -13,7 +13,7 @@ abstract class Ast {
   String name = "f${ctr++}";
   int get minWidth;
   int get maxWidth;
-  void collect(List<int> captures) {}
+  void collect(List<int> captures, bool goIntoLoops) {}
 
   void _(State state, Object o) {
     state.out.writeln(o);
@@ -65,9 +65,9 @@ abstract class BinaryAst extends Ast {
     l.alloc(state);
     r.alloc(state);
   }
-  void collect(List<int> captures) {
-    l.collect(captures);
-    r.collect(captures);
+  void collect(List<int> captures, bool goIntoLoops) {
+    l.collect(captures, goIntoLoops);
+    r.collect(captures, goIntoLoops);
   }
 }
 
@@ -380,8 +380,8 @@ abstract class UnaryAst extends Ast {
     maxWidthIsCalculated = true;
     return maxWidthCached = ast.maxWidth;
   }
-  void collect(List<int> captures) {
-    ast.collect(captures);
+  void collect(List<int> captures, bool goIntoLoops) {
+    ast.collect(captures, goIntoLoops);
   }
 }
 
@@ -397,7 +397,7 @@ class Lookahead extends UnaryAst {
     _(s, "ok:");
     if (!sense) {
       List<int> captures = [];
-      ast.collect(captures);
+      ast.collect(captures, true);
       for (int capture in captures) {
 	_(s, "  %gep$capture = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $capture");
 	_(s, "  store i8* null, i8** %gep$capture");
@@ -447,9 +447,9 @@ class Capturing extends UnaryAst {
     state.captures += 2;
     ast.alloc(state);
   }
-  void collect(List<int> captures) {
+  void collect(List<int> captures, bool goIntoLoops) {
     captures.add(capture_register);
-    ast.collect(captures);
+    ast.collect(captures, goIntoLoops);
   }
   String toString() => "($ast)";
   bool isAnchored() => ast.isAnchored();
@@ -484,19 +484,58 @@ class Loop extends UnaryAst {
     String second_call = greedy ? succ : ast.name;
     _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
     if (counted) genPreCounter(s);
+    if (greedy) saveCounters(s);
     _(s, "  %result = call i32 @$first_call(%restate_t* %state, i8* %s)");
     if (counted && greedy) _(s, "  store i32 %counter, i32* %gep");
     _(s, "  %comparison = icmp eq i32 %result, 0");
     _(s, "  br i1 %comparison, label %failed, label %ok");
     _(s, "failed:");
+    if (greedy) restoreCounters(s);
     if (counted) genPostCounter(s);
+    if (!greedy) saveCounters(s);
     _(s, "  %succ = call i32 @$second_call(%restate_t* %state, i8* %s)");
+    // TODO:  This is not restoring in the right place.
+    if (!greedy) restoreCounters(s);
     if (counted && !greedy) _(s, "  store i32 %counter, i32* %gep");
     _(s, "  ret i32 %succ");
     _(s, "ok:");
     _(s, "  ret i32 1");
     _(s, "}");
     ast.gen(s, name);
+  }
+  // The counters and captures for inner loops have to be reset to 0 when we
+  // start this outer loop, but we save the old values in case we backtrack.
+  void saveCounters(State s) {
+    List<int> regs = [];
+    ast.collect(regs, false);
+    for (int reg in regs) {
+      if (reg >= 0) {
+	for (int i = reg; i < reg + 2; i++) {
+	  _(s, "  %gep_capture$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $i");
+	  _(s, "  %cap$i = load i8*, i8** %gep_capture$i");
+	  _(s, "  store i8* null, i8** %gep_capture$i");
+	}
+      } else {
+	int count = -reg - 1;
+	_(s, "  %gep_count$count = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 $count");
+	_(s, "  %count$count = load i32, i32* %gep_count$count");
+	_(s, "  store i32 0, i32* %gep_count$count");
+      }
+    }
+  }
+  void restoreCounters(State s) {
+    List<int> regs = [];
+    ast.collect(regs, false);
+    for (int reg in regs) {
+      if (reg >= 0) {
+	for (int i = reg; i < reg + 2; i++) {
+	  _(s, "  store i8* %cap$i, i8** %gep_capture$i");
+	}
+      } else {
+	int count = -reg - 1;
+	_(s, "  store i32 %count$count, i32* %gep_count$count");
+      }
+    }
   }
   // If this loop is counted then increment the counter and check that we have
   // not exceeded the max number of iterations.
@@ -541,6 +580,10 @@ class Loop extends UnaryAst {
   void alloc(State state) {
     if (counted) counter_register = state.counters++;
     ast.alloc(state);
+  }
+  void collect(List<int> captures, bool goIntoLoops) {
+    if (counted) captures.add(-(counter_register + 1));
+    if (goIntoLoops) ast.collect(captures, goIntoLoops);
   }
   bool isAnchored() => min > 0 && ast.isAnchored();
   int get minWidth {
@@ -909,7 +952,7 @@ void main(List<String> args) {
   if (dotFile) {
     Parser parser = new Parser(source);
     Ast ast = parser.parse();
-    if (ast == null) return 1;
+    if (ast == null) return;
     print("Digraph G {");
     ast.dump();
     print("}");
@@ -921,7 +964,7 @@ void main(List<String> args) {
       llvmCodeGen(stdout, source, topSymbol);
     }
   }
-  return 0;
+  return;
 }
 
 void llvmCodeGen(IOSink out, String source, String topSymbol) {
