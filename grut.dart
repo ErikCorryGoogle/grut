@@ -72,10 +72,13 @@ abstract class BinaryAst extends Ast {
 }
 
 class Dot extends Single {
+  Dot(this.backwards);
+  bool backwards;
   String get condition => "ne";
   int get code => 0;
   String toString() => ".";
-  bool get advance => true;
+  int get advance => backwards ? -1 : 1;
+  int get offset => backwards ? -1 : 0;
   int get minWidth => 1;
   int get maxWidth => 1;
 }
@@ -84,21 +87,24 @@ class End extends Single {
   String get condition => "eq";
   int get code => 0;  // Match null character at end of string.
   String toString() => "\$";
-  bool get advance => false;  // Zero width '$' assertion does not advance.
+  int get advance => 0;  // Zero width '$' assertion does not advance.
+  int get offset => 0;
   int get minWidth => 0;
   int get maxWidth => 0;
 }
 
 class Literal extends Single {
-  Literal(this.char) { escaped = char; }
-  Literal.named(this.char, this.escaped);
+  Literal(this.char, this.backwards) { escaped = char; }
+  Literal.named(this.char, this.escaped, this.backwards);
   String char;
   String escaped;
+  bool backwards;
 
   String get condition => "eq";
   int get code => char.codeUnitAt(0);
   String toString() => escaped;
-  bool get advance => true;
+  int get advance => backwards ? -1 : 1;
+  int get offset => backwards ? -1 : 0;
   int get minWidth => 1;
   int get maxWidth => 1;
 }
@@ -125,34 +131,34 @@ class Range {
 }
 
 class CharacterClass extends Ast {
-  CharacterClass();
-  CharacterClass.digit() { add("0", "9"); }
-  CharacterClass.word() {
+  CharacterClass(this.backwards);
+  CharacterClass.digit(this.backwards) { add("0", "9"); }
+  CharacterClass.word(this.backwards) {
     add("0", "9");
     add("A", "Z");
     add("_", "_");
     add("a", "z");
   }
-  CharacterClass.whiteSpace() {
+  CharacterClass.whiteSpace(this.backwards) {
     add("\t", "\r");
     add(" ", " ");
   }
-  CharacterClass.notDigit() {
-    addNonInclusive("\x00", "0");
-    addNonInclusive("9", "\u0100");
+  factory CharacterClass.notDigit(bool backwards) {
+    CharacterClass self = new CharacterClass.digit(backwards);
+    self.negate();
+    return self;
   }
-  CharacterClass.notWord() {
-    addNonInclusive("\x00", "0");
-    addNonInclusive("9", "A");
-    addNonInclusive("Z", "_");
-    addNonInclusive("_", "a");
-    addNonInclusive("z", "\u0100");
+  factory CharacterClass.notWord(bool backwards) {
+    CharacterClass self = new CharacterClass.word(backwards);
+    self.negate();
+    return self;
   }
-  CharacterClass.notWhiteSpace() {
-    addNonInclusive("\x00", "\t");
-    addNonInclusive("\r", " ");
-    addNonInclusive(" ", "\u0100");
+  factory CharacterClass.notWhiteSpace(bool backwards) {
+    CharacterClass self = new CharacterClass.whiteSpace(backwards);
+    self.negate();
+    return self;
   }
+  bool backwards;
   List<Range> ranges = new List<Range>();
 
   void add(String from, String to) {
@@ -160,9 +166,6 @@ class CharacterClass extends Ast {
   }
   void addNumeric(int from, int to) {
     ranges.add(new Range(from, to));
-  }
-  void addNonInclusive(String from, String to) {
-    ranges.add(new Range(from.codeUnitAt(0) + 1, to.codeUnitAt(0) - 1));
   }
   void mergeIn(CharacterClass other) { ranges.addAll(other.ranges); }
 
@@ -200,7 +203,23 @@ class CharacterClass extends Ast {
 
   void gen(State s, String successor) {
     _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
-    _(s, "  %c = load i8, i8* %s, align 1");
+    if (backwards) {
+      _(s, "  %start_gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0");
+      _(s, "  %start = load i8*, i8** %start_gep");
+      _(s, "  %start_compare = icmp eq i8* %s, %start");
+      _(s, "  br i1 %start_compare, label %char_loaded, label %load_char");
+      _(s, "load_char:");
+      _(s, "  %gep = getelementptr i8, i8* %s, i64 -1");
+      _(s, "  %loaded_c = load i8, i8* %gep, align 1");
+      _(s, "  br label %char_loaded");
+      _(s, "char_loaded:");
+      // Load 0 if we are at start, which can never match.
+      _(s, "  %c = phi i8 [ %loaded_c, %load_char ], [ 0, %0]");
+    } else {
+      _(s, "  %c = load i8, i8* %s, align 1");
+    }
+    _(s, "  br label %top");
+    _(s, "top:");
     List<String> phi = new List<String>();
     for (int i = 0; i < ranges.length; i++) {
       Range r = ranges[i];
@@ -214,11 +233,11 @@ class CharacterClass extends Ast {
     }
     _(s, "  br label %got_result");
     _(s, "matched:");
-    _(s, "  %next = getelementptr i8, i8* %s, i64 1");
+    _(s, "  %next = getelementptr i8, i8* %s, i64 ${backwards ? -1 : 1}");
     _(s, "  %succ_result = call i32 @$successor(%restate_t* %state, i8* %next)");
     _(s, "  br label %got_result");
     _(s, "got_result:");
-    _(s, "  %result = phi i32 [ %succ_result, %matched ], [ 0, %0 ]${phi.join()}");
+    _(s, "  %result = phi i32 [ %succ_result, %matched ], [ 0, %top ]${phi.join()}");
     _(s, "  ret i32 %result");
     _(s, "}");
   }
@@ -251,30 +270,43 @@ class Start extends Ast {
 abstract class Single extends Ast {
   String get condition;
   int get code;
-  bool get advance;
+  int get advance;
+  int get offset;
 
   void gen(State s, String successor) {
     _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
     // char c = *s
-    _(s, "  %c = load i8, i8* %s, align 1");
+    if (offset == -1) {
+      // When stepping backwards we have to check for start-of-string before
+      // loading 1 character before the cursor.
+      _(s, "  %start_gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0");
+      _(s, "  %start = load i8*, i8** %start_gep");
+      _(s, "  %start_compare = icmp eq i8* %s, %start");
+      _(s, "  br i1 %start_compare, label %at_start, label %load_char");
+      _(s, "at_start:");
+      _(s, "  ret i32 0");  // Fail.
+      _(s, "load_char:");
+      _(s, "  %gep = getelementptr i8, i8* %s, i64 $offset");
+      _(s, "  %c = load i8, i8* %gep, align 1");
+    } else {
+      _(s, "  br label %load_char");
+      _(s, "load_char:");
+      _(s, "  %c = load i8, i8* %s, align 1");
+    }
     // bool comparison = c == ascii_code_of_literal
     _(s, "  %comparison = icmp $condition i8 %c, $code");
     // if comparison goto matched else goto got_result;
     _(s, "  br i1 %comparison, label %matched, label %got_result");
     _(s, "matched:");
-    if (advance) {
-      // char* next = s + 1;
-      _(s, "  %next = getelementptr i8, i8* %s, i64 1");
-      // int succ_result = f42(next);
-      _(s, "  %succ_result = call i32 @$successor(%restate_t* %state, i8* %next)");
-    } else {
-      _(s, "  %succ_result = call i32 @$successor(%restate_t* %state, i8* %s)");
-    }
+    // char* next = s +- 1;
+    _(s, "  %next = getelementptr i8, i8* %s, i64 $advance");
+    // int succ_result = f42(next);
+    _(s, "  %succ_result = call i32 @$successor(%restate_t* %state, i8* %next)");
     // goto got_result;
     _(s, "  br label %got_result");
     _(s, "got_result:");
     // int result = phi(succ_result, 0);
-    _(s, "  %result = phi i32 [ %succ_result, %matched ], [ 0, %0 ]");
+    _(s, "  %result = phi i32 [ %succ_result, %matched ], [ 0, %load_char ]");
     // return result
     _(s, "  ret i32 %result");
     _(s, "}");
@@ -387,6 +419,7 @@ abstract class UnaryAst extends Ast {
 
 class Lookahead extends UnaryAst {
   Lookahead(Ast ast, this.sense) : super(ast);
+  bool sense;
   void gen(State s, String succ) {
     _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
     _(s, "  %result = call i32 @${ast.name}(%restate_t* %state, i8* %s)");
@@ -395,29 +428,45 @@ class Lookahead extends UnaryAst {
     _(s, "failed:");
     _(s, "  ret i32 0");
     _(s, "ok:");
-    if (!sense) {
-      List<int> captures = [];
-      ast.collect(captures, true);
-      for (int capture in captures) {
-	_(s, "  %gep$capture = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $capture");
-	_(s, "  store i8* null, i8** %gep$capture");
-      }
-    }
+    if (!sense) ClearCaptures(s);
     _(s, "  %result2 = call i32 @$succ(%restate_t* %state, i8* %s)");
+    if (sense) {
+      _(s, "  %comparison2 = icmp eq i32 %result2, 0");
+      _(s, "  br i1 %comparison2, label %failed2, label %ok2");
+      _(s, "failed2:");
+      ClearCaptures(s);
+      _(s, "  ret i32 0");
+      _(s, "ok2:");
+    }
     _(s, "  ret i32 %result2");
     _(s, "}");
     ast.gen(s, "match");
   }
-  bool sense;
+  void ClearCaptures(State s) {
+    List<int> captures = [];
+    ast.collect(captures, false);
+    for (int reg in captures) {
+      if (reg >= 0) {
+	_(s, "  %gep$reg = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $reg");
+	_(s, "  store i8* null, i8** %gep$reg");
+	_(s, "  %gep${reg + 1} = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 ${reg + 1}");
+	_(s, "  store i8* null, i8** %gep${reg + 1}");
+      }
+      // No need to reset counters.
+    }
+  }
 }
 
 class Capturing extends UnaryAst {
-  Capturing(Ast ast) : super(ast);
+  Capturing(Ast ast, this.backwards) : super(ast);
+  bool backwards;
   int capture_register;
   // TODO: Set registers when capturing.
   void gen(State s, String succ) {
+    int first = capture_register + (backwards ? 1 : 0);
+    int second = capture_register + (backwards ? 0 : 1);
     _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
-    _(s, "  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 ${capture_register}");
+    _(s, "  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $first");
     _(s, "  store i8* %s, i8** %gep");
     _(s, "  %result = call i32 @${ast.name}(%restate_t* %state, i8* %s)");
     _(s, "  %comparison = icmp eq i32 %result, 0");
@@ -429,7 +478,7 @@ class Capturing extends UnaryAst {
     _(s, "  ret i32 %result");
     _(s, "}");
     _(s, "define internal i32 @${name}_close(%restate_t* %state, i8* %s) {");
-    _(s, "  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 ${capture_register + 1}");
+    _(s, "  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $second");
     _(s, "  store i8* %s, i8** %gep");
     _(s, "  %result = call i32 @$succ(%restate_t* %state, i8* %s)");
     _(s, "  %comparison = icmp eq i32 %result, 0");
@@ -517,16 +566,16 @@ class Loop extends UnaryAst {
     ast.collect(regs, false);
     for (int reg in regs) {
       if (reg >= 0) {
-	for (int i = reg; i < reg + 2; i++) {
-	  _(s, "  %gep_capture$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $i");
-	  _(s, "  %cap$i = load i8*, i8** %gep_capture$i");
-	  _(s, "  store i8* null, i8** %gep_capture$i");
-	}
+        for (int i = reg; i < reg + 2; i++) {
+          _(s, "  %gep_capture$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $i");
+          _(s, "  %cap$i = load i8*, i8** %gep_capture$i");
+          _(s, "  store i8* null, i8** %gep_capture$i");
+        }
       } else {
-	int count = -reg - 1;
-	_(s, "  %gep_count$count = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 $count");
-	_(s, "  %count$count = load i32, i32* %gep_count$count");
-	_(s, "  store i32 0, i32* %gep_count$count");
+        int count = -reg - 1;
+        _(s, "  %gep_count$count = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 $count");
+        _(s, "  %count$count = load i32, i32* %gep_count$count");
+        _(s, "  store i32 0, i32* %gep_count$count");
       }
     }
     return regs;
@@ -534,12 +583,12 @@ class Loop extends UnaryAst {
   void restoreCounters(State s, List<int> regs) {
     for (int reg in regs) {
       if (reg >= 0) {
-	for (int i = reg; i < reg + 2; i++) {
-	  _(s, "  store i8* %cap$i, i8** %gep_capture$i");
-	}
+        for (int i = reg; i < reg + 2; i++) {
+          _(s, "  store i8* %cap$i, i8** %gep_capture$i");
+        }
       } else {
-	int count = -reg - 1;
-	_(s, "  store i32 %count$count, i32* %gep_count$count");
+        int count = -reg - 1;
+        _(s, "  store i32 %count$count, i32* %gep_count$count");
       }
     }
   }
@@ -618,6 +667,7 @@ class Parser {
   String src;
   int pos = 0;
   String current;
+  bool backwards = false;
 
   void die(String s) {
     throw new ParseError(s, pos);
@@ -639,11 +689,11 @@ class Parser {
       stderr.writeln("^".padLeft(error.pos + 1, " "));
       return null;
     }
-    ast = new Capturing(ast);  // Implicit 0th capture is whole match.
+    ast = new Capturing(ast, false);  // Implicit 0th capture is whole match.
     if (!ast.isAnchored()) {
       // For non-sticky regexps (which is the only thing we support) we prepend
       // a non-greedy loop).
-      ast = new Alternative(new Loop.asterisk(new Dot(), true), ast);
+      ast = new Alternative(new Loop.asterisk(new Dot(false), true), ast);
     }
     return ast;
   }
@@ -651,41 +701,52 @@ class Parser {
   Ast parseAtom() {
     if (accept("(")) {
       bool capturing = true;
-      bool lookahead = false;
-      bool lookaheadSense;
+      bool lookaround = false;
+      bool lookaroundSense;
+      bool lookahead = true;
       if (accept("?")) {
-	if (accept("=")) {
-	  lookahead = true;
-	  lookaheadSense = true;
-	} else if (accept("!")) {
-	  lookahead = true;
-	  lookaheadSense = false;
-	} else {
-	  expect(":");
-	}
-	capturing = false;
+        if (accept("<")) lookahead = false;
+        if (accept("=")) {
+          lookaround = true;
+          lookaroundSense = true;
+        } else if (accept("!")) {
+          lookaround = true;
+          lookaroundSense = false;
+        } else {
+          expect(":");
+        }
+        if (lookahead && !lookaround) die("(?< must be followed by = or !");
+        capturing = false;
       }
-      Ast ast = parseDisjunction();
-      if (capturing) ast = new Capturing(ast);
-      if (lookahead) ast = new Lookahead(ast, lookaheadSense);
+      Ast ast;
+      if (!capturing) {
+        bool oldDirection = backwards;
+        backwards = !lookahead;
+        ast = parseDisjunction();
+        backwards = oldDirection;
+      } else {
+        ast = parseDisjunction();
+      }
+      if (capturing) ast = new Capturing(ast, backwards);
+      if (lookaround) ast = new Lookahead(ast, lookaroundSense);
       expect(")");
       return ast;
     }
     if (current == "|" || current == ")" || current == "") return null;
-    if (accept(".")) return new Dot();
+    if (accept(".")) return new Dot(backwards);
     if (accept("\\")) return parseEscape();
     if (accept("[")) return parseCharClass();
     if (accept("*") || accept("?") || accept("+") || accept("{"))
       die("Unexpected quantifier");
     // TODO: Should we (unlike Dart and JS) disallow a bare ']' here?
     checkForNull();
-    Ast ast = new Literal(current);
+    Ast ast = new Literal(current, backwards);
     accept(current);
     return ast;
   }
 
   Ast parseCharClass() {
-    CharacterClass c = new CharacterClass();
+    CharacterClass c = new CharacterClass(backwards);
     bool negated = accept("^");
     while (!accept("]")) {
       int from, to;
@@ -701,14 +762,14 @@ class Parser {
         } else if (accept("")) {
           die("Unexpected end of regexp");
         } else {
-	  checkForNull();
+          checkForNull();
           from = current.codeUnitAt(0);
           accept(current);
         }
       } else if (accept("")) {
-	die("Unexpected end of regexp");
+        die("Unexpected end of regexp");
       } else {
-	checkForNull();
+        checkForNull();
         from = current.codeUnitAt(0);
         accept(current);
       }
@@ -722,16 +783,16 @@ class Parser {
         if (ascii != null) {
           to = ascii.codeUnitAt(0);
         } else if (accept("")) {
-	  die("Unexpected end of regexp");
+          die("Unexpected end of regexp");
         } else {
-	  checkForNull();
+          checkForNull();
           to = current.codeUnitAt(0);
           accept(current);
         }
       } else if (accept("")) {
-	die("Unexpected end of regexp");
+        die("Unexpected end of regexp");
       } else {
-	checkForNull();
+        checkForNull();
         to = current.codeUnitAt(0);
         accept(current);
       }
@@ -755,7 +816,7 @@ class Parser {
   Ast parseEscape() {
     String char = current;
     String ascii = acceptAsciiEscape();
-    if (ascii != null) return new Literal.named(ascii, "\\$char");
+    if (ascii != null) return new Literal.named(ascii, "\\$char", backwards);
     CharacterClass clarse = acceptClassLetter();
     if (clarse != null) return clarse;
     if (accept("")) die("Unexpected end of regexp");
@@ -766,7 +827,7 @@ class Parser {
     if (current.codeUnitAt(0) >= '0'.codeUnitAt(0) &&
         current.codeUnitAt(0) <= '9'.codeUnitAt(0)) die("Unsupported escape");
     checkForNull();
-    Ast ast = new Literal(current);
+    Ast ast = new Literal(current, backwards);
     accept(current);
     return ast;
   }
@@ -803,7 +864,10 @@ class Parser {
     while (true) {
       Ast next = parseTerm();
       if (next == null) return ast;
-      ast = new Alternative(ast, next);
+      if (backwards)
+        ast = new Alternative(next, ast);
+      else
+        ast = new Alternative(ast, next);
     }
   }
 
@@ -852,12 +916,12 @@ class Parser {
   }
 
   CharacterClass acceptClassLetter() {
-    if (accept("d")) return new CharacterClass.digit();
-    if (accept("s")) return new CharacterClass.whiteSpace();
-    if (accept("w")) return new CharacterClass.word();
-    if (accept("D")) return new CharacterClass.notDigit();
-    if (accept("S")) return new CharacterClass.notWhiteSpace();
-    if (accept("W")) return new CharacterClass.notWord();
+    if (accept("d")) return new CharacterClass.digit(backwards);
+    if (accept("s")) return new CharacterClass.whiteSpace(backwards);
+    if (accept("w")) return new CharacterClass.word(backwards);
+    if (accept("D")) return new CharacterClass.notDigit(backwards);
+    if (accept("S")) return new CharacterClass.notWhiteSpace(backwards);
+    if (accept("W")) return new CharacterClass.notWord(backwards);
     return null;
   }
 }
@@ -915,25 +979,25 @@ void main(List<String> args) {
         source = args[++i];
         break;
       case "-f":
-	source = new File(args[++i]).readAsStringSync();
-	if (source.endsWith("\n")) source = source.substring(0, source.length - 1);
-	break;
+        source = new File(args[++i]).readAsStringSync();
+        if (source.endsWith("\n")) source = source.substring(0, source.length - 1);
+        break;
       case "-o":
         filename = args[++i];
         break;
       case "-d":
         dotFile = true;
-	break;
+        break;
       case "-l":
         llFile = true;
-	break;
+        break;
       case "-s":
         topSymbol = args[++i];
         break;
       default:
-	usage();
-	exitCode = 1;
-	return;
+        usage();
+        exitCode = 1;
+        return;
     }
   }
   if (!dotFile && !llFile) {
