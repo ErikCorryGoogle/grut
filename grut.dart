@@ -759,9 +759,8 @@ class Parser {
         String ascii = acceptAsciiEscape();
         if (ascii != null) {
           from = ascii.codeUnitAt(0);
-        } else if (accept("")) {
-          die("Unexpected end of regexp");
         } else {
+	  checkEscape();
           checkForNull();
           from = current.codeUnitAt(0);
           accept(current);
@@ -782,9 +781,8 @@ class Parser {
         String ascii = acceptAsciiEscape();
         if (ascii != null) {
           to = ascii.codeUnitAt(0);
-        } else if (accept("")) {
-          die("Unexpected end of regexp");
         } else {
+	  checkEscape();
           checkForNull();
           to = current.codeUnitAt(0);
           accept(current);
@@ -813,12 +811,42 @@ class Parser {
     return null;
   }
 
+  Ast acceptBoundary() {
+    String b = current;
+    if (accept("b") || accept("B")) {
+      Ast word_left = new Lookahead(new CharacterClass.word(true), true);
+      Ast not_word_right = new Lookahead(new CharacterClass.word(false), false);
+      Ast not_word_left = new Lookahead(new CharacterClass.word(true), false);
+      Ast word_right = new Lookahead(new CharacterClass.word(false), true);
+      if (b == "b") {
+	Ast start = new Alternative(not_word_left, word_right);
+	Ast end = new Alternative(word_left, not_word_right);
+	return new Disjunction(start, end);
+      } else {
+	Ast in_word = new Alternative(word_left, word_right);
+	Ast not_in_word = new Alternative(not_word_left, not_word_right);
+	return new Disjunction(in_word, not_in_word);
+      }
+    }
+    return null;
+  }
+
   Ast parseEscape() {
     String char = current;
     String ascii = acceptAsciiEscape();
     if (ascii != null) return new Literal.named(ascii, "\\$char", backwards);
+    Ast boundary = acceptBoundary();
+    if (boundary != null) return boundary;
     CharacterClass clarse = acceptClassLetter();
     if (clarse != null) return clarse;
+    checkEscape();
+    checkForNull();
+    Ast ast = new Literal(current, backwards);
+    accept(current);
+    return ast;
+  }
+
+  void checkEscape() {
     if (accept("")) die("Unexpected end of regexp");
     if (current.codeUnitAt(0) >= 'a'.codeUnitAt(0) &&
         current.codeUnitAt(0) <= 'z'.codeUnitAt(0)) die("Unsupported escape");
@@ -826,10 +854,6 @@ class Parser {
         current.codeUnitAt(0) <= 'Z'.codeUnitAt(0)) die("Unsupported escape");
     if (current.codeUnitAt(0) >= '0'.codeUnitAt(0) &&
         current.codeUnitAt(0) <= '9'.codeUnitAt(0)) die("Unsupported escape");
-    checkForNull();
-    Ast ast = new Literal(current, backwards);
-    accept(current);
-    return ast;
   }
 
   Ast parseTerm() {

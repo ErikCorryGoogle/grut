@@ -11,7 +11,7 @@ Features:
 * Regexp style is backtracking.
 * Supports .()^$ and literals. Greedy and non-greedy ?*+{}, [] char classes.
 * Supports look-aheads and look-behinds (variable length).
-* No support for \b (word boundary).
+* Supports \b (word boundary).
 
 Known issues:
 * Can't match a null character, and expects a null terminated string.
