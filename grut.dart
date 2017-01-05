@@ -315,7 +315,8 @@ abstract class Single extends Ast {
 
 // A series of terms matched one after the other.
 class Alternative extends BinaryAst {
-  Alternative(Ast l, Ast r) : super(l, r);
+  Alternative(Ast l, Ast r, this.backwards) : super(l, r);
+  bool backwards;
 
   String toString() => "($l$r)";
   void gen(State state, String succ) {
@@ -326,6 +327,17 @@ class Alternative extends BinaryAst {
   bool isAnchored() {
     if (l.maxWidth == 0) return l.isAnchored() || r.isAnchored();
     return l.isAnchored();
+  }
+  void alloc(State state) {
+    // We have to do this to get the captures numbered correctly from left to
+    // right in the source.
+    if (backwards) {
+      r.alloc(state);
+      l.alloc(state);
+    } else {
+      l.alloc(state);
+      r.alloc(state);
+    }
   }
   int get minWidth {
     if (minWidthIsCalculated) return minWidthCached;
@@ -693,7 +705,7 @@ class Parser {
     if (!ast.isAnchored()) {
       // For non-sticky regexps (which is the only thing we support) we prepend
       // a non-greedy loop).
-      ast = new Alternative(new Loop.asterisk(new Dot(false), true), ast);
+      ast = new Alternative(new Loop.asterisk(new Dot(false), true), ast, false);
     }
     return ast;
   }
@@ -819,12 +831,12 @@ class Parser {
       Ast not_word_left = new Lookahead(new CharacterClass.word(true), false);
       Ast word_right = new Lookahead(new CharacterClass.word(false), true);
       if (b == "b") {
-	Ast start = new Alternative(not_word_left, word_right);
-	Ast end = new Alternative(word_left, not_word_right);
+	Ast start = new Alternative(not_word_left, word_right, false);
+	Ast end = new Alternative(word_left, not_word_right, false);
 	return new Disjunction(start, end);
       } else {
-	Ast in_word = new Alternative(word_left, word_right);
-	Ast not_in_word = new Alternative(not_word_left, not_word_right);
+	Ast in_word = new Alternative(word_left, word_right, false);
+	Ast not_in_word = new Alternative(not_word_left, not_word_right, false);
 	return new Disjunction(in_word, not_in_word);
       }
     }
@@ -889,9 +901,9 @@ class Parser {
       Ast next = parseTerm();
       if (next == null) return ast;
       if (backwards)
-        ast = new Alternative(next, ast);
+        ast = new Alternative(next, ast, true);
       else
-        ast = new Alternative(ast, next);
+        ast = new Alternative(ast, next, false);
     }
   }
 
