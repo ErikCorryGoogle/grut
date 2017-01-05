@@ -675,8 +675,14 @@ class ParseError {
 }
 
 class Parser {
-  Parser(this.src);
+  Parser(this.src, this.mode) {
+    allowLenient = (mode == "js" || mode == "perl");
+    allowLookbehind = (mode != "js");
+  }
   String src;
+  String mode;
+  bool allowLenient;
+  bool allowLookbehind;
   int pos = 0;
   String current;
   bool backwards = false;
@@ -717,7 +723,10 @@ class Parser {
       bool lookaroundSense;
       bool lookahead = true;
       if (accept("?")) {
-        if (accept("<")) lookahead = false;
+        if (accept("<")) {
+	  if (!allowLookbehind) die("Lookbehind not available in $mode mode");
+	  lookahead = false;
+	}
         if (accept("=")) {
           lookaround = true;
           lookaroundSense = true;
@@ -748,8 +757,10 @@ class Parser {
     if (accept(".")) return new Dot(backwards);
     if (accept("\\")) return parseEscape();
     if (accept("[")) return parseCharClass();
-    if (accept("*") || accept("?") || accept("+") || accept("{"))
+    if (accept("*") || accept("?") || accept("+"))
       die("Unexpected quantifier");
+    if ((current == "{" || current == "}") && !allowLenient)
+      die("Literal { and } must be escaped in $mode mode");
     // TODO: Should we (unlike Dart and JS) disallow a bare ']' here?
     checkForNull();
     Ast ast = new Literal(current, backwards);
@@ -781,6 +792,7 @@ class Parser {
         die("Unexpected end of regexp");
       } else {
         checkForNull();
+	if (current == "-" && !allowLenient) die( "Literal dash must be escaped in character classes in $mode mode");
         from = current.codeUnitAt(0);
         accept(current);
       }
@@ -789,7 +801,14 @@ class Parser {
         continue;
       }
       if (accept(r"\")) {
-        if (acceptClassLetter() != null) die("Character class as end of a range");
+        CharacterClass clarse = acceptClassLetter();
+        if (clarse != null) {
+	  if (!allowLenient) die("Character class as end of a range");
+          c.mergeIn(clarse);
+	  c.add("-", "-");
+	  c.addNumeric(from, from);
+          continue;
+	}
         String ascii = acceptAsciiEscape();
         if (ascii != null) {
           to = ascii.codeUnitAt(0);
@@ -1001,6 +1020,7 @@ void usage() {
   stderr.writeln("  [-l]                (produce LLVM file)");
   stderr.writeln("  [-o filename]       (write to file, default stdout)");
   stderr.writeln("  [-s <symbol>]       (default 'grut')");
+  stderr.writeln("  [-m <mode>]         (default 'grut', can also be 'js' or 'perl'");
 }
 
 void main(List<String> args) {
@@ -1009,6 +1029,7 @@ void main(List<String> args) {
   String filename;
   bool dotFile = false;
   bool llFile = false;
+  String mode = "grut";
   for (int i = 0; i < args.length; i++) {
     switch (args[i]) {
       case "-e":
@@ -1030,6 +1051,14 @@ void main(List<String> args) {
       case "-s":
         topSymbol = args[++i];
         break;
+      case "-m":
+	mode = args[++i];
+	if (mode != "js" && mode != "perl") {
+	  stderr.writeln("Modes available: js, perl");
+	  exitCode = 1;
+	  return;
+	}
+	break;
       default:
         usage();
         exitCode = 1;
@@ -1056,7 +1085,7 @@ void main(List<String> args) {
   }
 
   if (dotFile) {
-    Parser parser = new Parser(source);
+    Parser parser = new Parser(source, mode);
     Ast ast = parser.parse();
     if (ast == null) return;
     print("Digraph G {");
@@ -1065,16 +1094,16 @@ void main(List<String> args) {
   }
   if (llFile) {
     if (filename != null) {
-      llvmCodeGen(new File(filename).openWrite(), source, topSymbol);
+      llvmCodeGen(new File(filename).openWrite(), source, topSymbol, mode);
     } else {
-      llvmCodeGen(stdout, source, topSymbol);
+      llvmCodeGen(stdout, source, topSymbol, mode);
     }
   }
   return;
 }
 
-void llvmCodeGen(IOSink out, String source, String topSymbol) {
-  Parser parser = new Parser(source);
+void llvmCodeGen(IOSink out, String source, String topSymbol, String mode) {
+  Parser parser = new Parser(source, mode);
   Ast ast = parser.parse();
   if (ast == null) {
     exitCode = 1;

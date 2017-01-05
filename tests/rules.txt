@@ -1,12 +1,12 @@
 # Test rules for the Grut regexp compiler.
 
 # regexp files compiled to LLVM .ll files by the Grut application.
-foo.re -> foo.ll : dart grut.dart -l -o foo.ll -f foo.re
+foo.re -> foo.ll : dart grut.dart -m js -l -o foo.ll -f foo.re
 
 # regexp files compiled to LLVM .ll files by the Grut application.
 # These are the regexps that don't work in plain JS or Dart because they use
 # extensions like lookbehind.  We use perl to test them.
-foo.plre -> foo.ll : dart grut.dart -l -o foo.ll -f foo.plre
+foo.plre -> foo.ll : dart grut.dart -m perl -l -o foo.ll -f foo.plre
 
 # We are testing against the irregexp implementation in the DartVM, so
 # construct the expect files with those.
