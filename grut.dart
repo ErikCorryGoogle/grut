@@ -139,8 +139,8 @@ class Backreference extends Ast {
   int get minWidth => 0;
   int get maxWidth => null;
   void gen(State s, String successor) {
-    // TODO: This error is a bit late.
-    if (ref * 2 >= s.captures) die ("Backreference out of range: $ref");
+    // TODO: This isn't really how we report syntax errors.
+    if (ref * 2 >= s.captures) throw "Backreference out of range: $ref";
     _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
     _(s, "  %start_gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0");
     _(s, "  %start = load i8*, i8** %start_gep");
@@ -760,6 +760,18 @@ class Parser {
       bool lookaroundSense;
       bool lookahead = true;
       if (accept("?")) {
+	if (mode == 'perl' && accept("#")) {
+	  int saved_pos = pos;
+	  while (!accept(")")) {
+	    if (current == "") {
+	      pos = saved_pos - 1;
+	      die("Missing end of (?#...) comment");
+	    }
+	    accept(current);
+	  }
+	  accept(")");
+	  return new EmptyAlternative();
+	}
         if (accept("<")) {
 	  if (!allowLookbehind) die("Lookbehind not available in $mode mode");
 	  lookahead = false;

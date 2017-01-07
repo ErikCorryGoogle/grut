@@ -53,4 +53,4 @@ foo.bar.manual-moutput, foo.bar.manual-mexpect -> foo.bar.mdummy : diff -u foo.b
 foo.bad-re -> foo.errormessage.txt ! dart grut.dart -l -o /dev/null -f foo.bad-re 2> foo.errormessage.txt
 
 # Perl-style regexps with parser errors in them.
-foo.bad-perlre -> foo.errormessage.txt ! dart grut.dart -l -o /dev/null -f foo.bad-perlre 2> foo.errormessage.txt
+foo.bad-perlre -> foo.errormessage.txt ! dart grut.dart -m perl -l -o /dev/null -f foo.bad-perlre 2> foo.errormessage.txt
