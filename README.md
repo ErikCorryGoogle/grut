@@ -12,6 +12,7 @@ Features:
 * Supports .()^$ and literals. Greedy and non-greedy ?*+{}, [] char classes.
 * Supports look-aheads and look-behinds (variable length).
 * Supports \b (word boundary).
+* Supports back-references like \1.
 
 Known issues:
 * Can't match a null character, and expects a null terminated string.

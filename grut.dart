@@ -130,6 +130,40 @@ class Range {
   }
 }
 
+class Backreference extends Ast {
+  Backreference(this.ref, this.backwards, this.jsMode);
+  int ref;
+  bool backwards;
+  bool jsMode;
+  String toString() => r'\$ref';
+  int get minWidth => 0;
+  int get maxWidth => null;
+  void gen(State s, String successor) {
+    // TODO: This error is a bit late.
+    if (ref * 2 >= s.captures) die ("Backreference out of range: $ref");
+    _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
+    _(s, "  %start_gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 0");
+    _(s, "  %start = load i8*, i8** %start_gep");
+    _(s, "  %gep_open = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 ${ref * 2}");
+    _(s, "  %gep_close = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 ${ref * 2 + 1}");
+    _(s, "  %open = load i8*, i8** %gep_open");
+    _(s, "  %close = load i8*, i8** %gep_close");
+    _(s, "  %offset_return = alloca i32, align 4");
+    _(s, "  %result = call i32 @checkBackref(i8* %s, i8* %open, i8* %close, i8* %start, "
+	 "  i32* %offset_return, i32 ${backwards ? 1 : 0}, i32 ${jsMode ? 1 : 0})");
+    _(s, "  %comparison = icmp eq i32 %result, 0");
+    _(s, "  br i1 %comparison, label %fail, label %success");
+    _(s, "fail:");
+    _(s, "  ret i32 0");
+    _(s, "success:");
+    _(s, "  %offset = load i32, i32* %offset_return");
+    _(s, "  %next = getelementptr i8, i8* %s, i32 %offset");
+    _(s, "  %succ_result = call i32 @$successor(%restate_t* %state, i8* %next)");
+    _(s, "  ret i32 %succ_result");
+    _(s, "}");
+  }
+}
+
 class CharacterClass extends Ast {
   CharacterClass(this.backwards);
   CharacterClass.digit(this.backwards) { add("0", "9"); }
@@ -536,10 +570,11 @@ class Loop extends UnaryAst {
     if (min == max) return "($ast){$min}$n";
     return "($ast){$min,$max}$n";
   }
-  // This is for greedy loops, so we first try to match the body of the loop,
-  // and only if that fails, we try to match the successor.  When matching the
-  // body, the loop itself is the successor - despite the name "Loop", we are
-  // implementing this using recursion.
+  // For greedy loops, we first try to match the body of the loop, and only if
+  // that fails, we try to match the successor.  For non-greedy loops we use
+  // the opposite order.  When matching the body, the loop itself is the
+  // successor - despite the name "Loop", we are implementing this using
+  // recursion.
   void gen(State s, String succ) {
     List<int> savedCounters;
     String first_call = greedy ? ast.name : succ;
@@ -686,6 +721,7 @@ class Parser {
   int pos = 0;
   String current;
   bool backwards = false;
+  int capturingBracketCount = 0;
 
   void die(String s) {
     throw new ParseError(s, pos);
@@ -696,6 +732,7 @@ class Parser {
   }
 
   Ast parse() {
+    if (mode == 'js') jsCountCaptures();
     getToken();
     Ast ast;
     try {
@@ -736,7 +773,7 @@ class Parser {
         } else {
           expect(":");
         }
-        if (lookahead && !lookaround) die("(?< must be followed by = or !");
+        if (!lookahead && !lookaround) die("(?< must be followed by = or !");
         capturing = false;
       }
       Ast ast;
@@ -836,10 +873,133 @@ class Parser {
   String acceptAsciiEscape() {
     if (accept("n")) return "\n";
     if (accept("f")) return "\f";
+    if (accept("v")) return "\v";
     if (accept("t")) return "\t";
     if (accept(r"\")) return r"\";
     if (accept("r")) return "\r";
+
+    int zero = '0'.codeUnitAt(0);
+    int a = 'a'.codeUnitAt(0);
+    int A = 'A'.codeUnitAt(0);
+
+    if (mode == 'js' && current == "c") {
+      // Remember that pos is 1 ahead of current.
+      // We have to peek ahead here because in js mode \cz means control-Z, but
+      // \c0 means '\c0', including a literal backslash!
+      if (pos + 1 >= src.length) return r'\';
+      int code = src.codeUnitAt(pos);
+      if (code >= a && code <= a + 25) {
+	accept("c");
+	accept(current);
+        return new String.fromCharCode(code - a - 1);
+      } else if (code >= A && code <= A + 25) {
+	accept("c");
+	accept(current);
+        return new String.fromCharCode(code - A - 1);
+      } else {
+	return r'\';
+      }
+    }
+    int digits = (current == "u") ? 4 : 2;
+    if (accept("x") || accept("u")) {
+      bool find_curly = accept("{");
+      if (find_curly) digits = 6;
+      int hex = 0;
+      for (int digit = 0; digit < digits; digit++) {
+	int code = current.codeUnitAt(0);
+	if (code >= zero && code <= zero + 9)
+	  hex = hex * 16 + code - zero;
+	else if (code >= a && code <= a + 5)
+	  hex = hex * 16 + 10 + code - a;
+	else if (code >= A && code <= A + 5)
+	  hex = hex * 16 + 10 + code - A;
+        else if (find_curly && accept("}"))
+          break;
+	else
+	  die("Invalid $digits-digit hex escape");
+        accept(current);
+      }
+      if (hex == 0) die("Can't allow null characters in a Grut regexp");
+      if (hex > 0x10ffff) die("Unicode escape out of range");
+      return new String.fromCharCode(hex);
+    }
+
     return null;
+  }
+
+  // Only returns non-null if the entire decimal number that starts here makes
+  // up a valid backref number.  Doesn't consume anything unless advance is
+  // true.  May return a throwaway Ast depending on context.
+  Ast acceptBackreference(bool advance) {
+    if (!isDecimal(current)) return null;
+    if (current == "0") return null;
+
+    int num = 0;
+    int zero = '0'.codeUnitAt(0);
+    // Pos is 1 ahead, so start at -1.
+    int p = pos;
+    for (int i = -1; p + i < src.length; i++) {
+      String c = src[p + i];
+      if (!isDecimal(c)) return new Backreference(num, backwards, mode == 'js');
+      num = num * 10 + c.codeUnitAt(0) - zero;
+      if (num > capturingBracketCount && mode == "js") return null;
+      if (advance) accept(current);
+    }
+    return new Backreference(num, backwards, mode == 'js');
+  }
+
+  Ast acceptNumericEscape() {
+    if (!isDecimal(current)) return null;
+    if (mode == 'js') {
+      // JS mode has both octal escapes and backreferences, and they have the
+      // same syntax. The way to do it is to peek forwards at all the decimal
+      // digits and determine if they all together make up a valid
+      // backreference (relative to the number of captures).  If so, it's a
+      // backreference.  Otherwise it might be an octal escape, possibly
+      // followed by literal digits.
+      if (acceptBackreference(false) != null) return acceptBackreference(true);
+      if (isOctal(current)) return acceptOctalEscape();
+      return null;
+    } else {
+      // Other regexp flavours don't have octal escapes, so it must be a
+      // backreference.
+      Ast ref = acceptBackreference(false);  // Peek.
+      if (ref == null) die("Backref number out of range 1-$capturingBracketCount");
+      acceptBackreference(true);  // Consume input.
+      return ref;
+    }
+  }
+
+  Ast acceptOctalEscape() {
+    if (!isOctal(current)) return null;
+    int zero = '0'.codeUnitAt(0);
+    int octal = current.codeUnitAt(0) - zero;
+    accept(current);
+
+    bool three_digits_possible = octal <= 3;  // Only allow 1 to 0377.
+    if (!isOctal(current)) return escapeGate(octal);
+    octal = octal * 8 + current.codeUnitAt(0) - zero;
+    accept(current);
+
+    if (!three_digits_possible || !isOctal(current)) return escapeGate(octal);
+    octal = octal * 8 + current.codeUnitAt(0) - zero;
+    accept(current);
+    return escapeGate(octal);
+  }
+
+  Ast escapeGate(int code) {
+    if (code == 0) die("Can't allow null characters in a Grut regexp");
+    return new Literal(new String.fromCharCode(code), backwards);
+  }
+
+  bool isDecimal(String c) {
+    int digit = c.codeUnitAt(0) - '0'.codeUnitAt(0);
+    return digit >= 0 && digit <= 9;
+  }
+
+  bool isOctal(String c) {
+    int digit = c.codeUnitAt(0) - '0'.codeUnitAt(0);
+    return digit >= 0 && digit <= 7;
   }
 
   Ast acceptBoundary() {
@@ -870,6 +1030,8 @@ class Parser {
     if (boundary != null) return boundary;
     CharacterClass clarse = acceptClassLetter();
     if (clarse != null) return clarse;
+    Ast esc = acceptNumericEscape();
+    if (esc != null) return esc;
     checkEscape();
     checkForNull();
     Ast ast = new Literal(current, backwards);
@@ -879,12 +1041,14 @@ class Parser {
 
   void checkEscape() {
     if (accept("")) die("Unexpected end of regexp");
-    if (current.codeUnitAt(0) >= 'a'.codeUnitAt(0) &&
-        current.codeUnitAt(0) <= 'z'.codeUnitAt(0)) die("Unsupported escape");
-    if (current.codeUnitAt(0) >= 'A'.codeUnitAt(0) &&
-        current.codeUnitAt(0) <= 'Z'.codeUnitAt(0)) die("Unsupported escape");
-    if (current.codeUnitAt(0) >= '0'.codeUnitAt(0) &&
-        current.codeUnitAt(0) <= '9'.codeUnitAt(0)) die("Unsupported escape");
+    if (mode != "js") {
+      if (current.codeUnitAt(0) >= 'a'.codeUnitAt(0) &&
+	  current.codeUnitAt(0) <= 'z'.codeUnitAt(0)) die("Unsupported escape");
+      if (current.codeUnitAt(0) >= 'A'.codeUnitAt(0) &&
+	  current.codeUnitAt(0) <= 'Z'.codeUnitAt(0)) die("Unsupported escape");
+      if (current.codeUnitAt(0) >= '0'.codeUnitAt(0) &&
+	  current.codeUnitAt(0) <= '9'.codeUnitAt(0)) die("Unsupported escape");
+    }
   }
 
   Ast parseTerm() {
@@ -979,6 +1143,29 @@ class Parser {
     if (accept("W")) return new CharacterClass.notWord(backwards);
     return null;
   }
+
+  // For JS mode we need to count the captures first because you can't parse
+  // backrefs without that info.
+  void jsCountCaptures() {
+    bool in_class = false;
+    for (int i = 0; i < src.length - 1; i++) {
+      // JS does not have inlined comments, so it's fairly simple to count
+      // capturing brackets.  All non-capturing brackets look like (?...).
+      int code = src.codeUnitAt(i);
+      if (code == r'\'.codeUnitAt(0)) {
+	i++;
+	continue;
+      } else if (!in_class && code == '('.codeUnitAt(0)) {
+	// Check for non-capturing.
+	if (src.codeUnitAt(i + 1) == '?'.codeUnitAt(0)) continue;
+	capturingBracketCount++;
+      } else if (!in_class && code == '['.codeUnitAt(0)) {
+	in_class = true;
+      } else if (in_class && code == ']'.codeUnitAt(0)) {
+	in_class = false;
+      }
+    }
+  }
 }
 
 void defineMatch(IOSink out) {
@@ -987,6 +1174,7 @@ void defineMatch(IOSink out) {
   out.writeln("define internal i32 @match(%restate_t* %state, i8* %s) {");
   out.writeln("  ret i32 1");
   out.writeln("}");
+  out.writeln("declare i32 @checkBackref(i8*, i8*, i8*, i8*, i32*, i32, i32)");
 }
 
 void defineTopLevel(State state, String symbol, String name) {
