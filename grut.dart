@@ -6,6 +6,19 @@ class State {
   IOSink out;
   int captures = 0;
   int counters = 0;
+  int zeroChecks = 0;
+
+  // A capture, counter or zero check can be represented by an integer.  Encode
+  // and decode those integers.
+  int captureRepresentation(int x) => x;
+  int counterRepresentation(int x) => x + captures;
+  int zeroCheckRepresentation(int x) => x + captures + counters;
+  bool isCaptureRepresentation(int x) => x < captures;
+  bool isCounterRepresentation(int x) => x < captures + counters && x >= captures;
+  bool isZeroCheckRepresentation(int x) => x >= captures + counters;
+  int getCapture(int x) => x;
+  int getCounter(int x) => x - captures;
+  int getZeroCheck(int x) => x - captures - counters;
 }
 
 abstract class Ast {
@@ -13,7 +26,7 @@ abstract class Ast {
   String name = "f${ctr++}";
   int get minWidth;
   int get maxWidth;
-  void collect(List<int> captures, bool goIntoLoops) {}
+  void collect(State s, List<int> regs, bool goIntoLoops) {}
 
   void _(State state, Object o) {
     state.out.writeln(o);
@@ -65,9 +78,9 @@ abstract class BinaryAst extends Ast {
     l.alloc(state);
     r.alloc(state);
   }
-  void collect(List<int> captures, bool goIntoLoops) {
-    l.collect(captures, goIntoLoops);
-    r.collect(captures, goIntoLoops);
+  void collect(State s, List<int> regs, bool goIntoLoops) {
+    l.collect(s, regs, goIntoLoops);
+    r.collect(s, regs, goIntoLoops);
   }
 }
 
@@ -150,7 +163,7 @@ class Backreference extends Ast {
     _(s, "  %close = load i8*, i8** %gep_close");
     _(s, "  %offset_return = alloca i32, align 4");
     _(s, "  %result = call i32 @checkBackref(i8* %s, i8* %open, i8* %close, i8* %start, "
-	 "  i32* %offset_return, i32 ${backwards ? 1 : 0}, i32 ${jsMode ? 1 : 0})");
+         "  i32* %offset_return, i32 ${backwards ? 1 : 0}, i32 ${jsMode ? 1 : 0})");
     _(s, "  %comparison = icmp eq i32 %result, 0");
     _(s, "  br i1 %comparison, label %fail, label %success");
     _(s, "fail:");
@@ -458,8 +471,8 @@ abstract class UnaryAst extends Ast {
     maxWidthIsCalculated = true;
     return maxWidthCached = ast.maxWidth;
   }
-  void collect(List<int> captures, bool goIntoLoops) {
-    ast.collect(captures, goIntoLoops);
+  void collect(State s, List<int> regs, bool goIntoLoops) {
+    ast.collect(s, regs, goIntoLoops);
   }
 }
 
@@ -490,15 +503,16 @@ class Lookahead extends UnaryAst {
   }
   void ClearCaptures(State s) {
     List<int> captures = [];
-    ast.collect(captures, false);
+    ast.collect(s, captures, false);
     for (int reg in captures) {
-      if (reg >= 0) {
-	_(s, "  %gep$reg = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $reg");
-	_(s, "  store i8* null, i8** %gep$reg");
-	_(s, "  %gep${reg + 1} = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 ${reg + 1}");
-	_(s, "  store i8* null, i8** %gep${reg + 1}");
+      if (s.isCaptureRepresentation(reg)) {
+        int r = s.getCapture(reg);
+        for (int i = r; i < r + 2; i++) {
+          _(s, "  %gep$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $i");
+          _(s, "  store i8* null, i8** %gep$i");
+        }
       }
-      // No need to reset counters.
+      // No need to reset counters or zero width check registers since they are not visible to the API.
     }
   }
 }
@@ -542,9 +556,9 @@ class Capturing extends UnaryAst {
     state.captures += 2;
     ast.alloc(state);
   }
-  void collect(List<int> captures, bool goIntoLoops) {
-    captures.add(capture_register);
-    ast.collect(captures, goIntoLoops);
+  void collect(State s, List<int> regs, bool goIntoLoops) {
+    regs.add(s.captureRepresentation(capture_register));
+    ast.collect(s, regs, goIntoLoops);
   }
   String toString() => "($ast)";
   bool isAnchored() => ast.isAnchored();
@@ -559,7 +573,9 @@ class Loop extends UnaryAst {
   bool nonGreedy;
   bool get greedy => !nonGreedy;
   bool get counted => min != 0 || max != null;
+  bool get zeroChecked => ast.minWidth == 0;
   int counter_register;
+  int zero_check_register;
   String toString() {
     String n = greedy ? "" : "?";
     if (max == null) {
@@ -580,26 +596,20 @@ class Loop extends UnaryAst {
     String first_call = greedy ? ast.name : succ;
     String second_call = greedy ? succ : ast.name;
     _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
-    if (counted) genPreCounter(s);
+    genPreCounter(s);
     if (greedy) savedCounters = saveCounters(s);
     _(s, "  %result = call i32 @$first_call(%restate_t* %state, i8* %s)");
-    if (counted && greedy) _(s, "  store i32 %counter, i32* %gep");
+    genPreCounterReturn(s);
     _(s, "  %comparison = icmp eq i32 %result, 0");
     _(s, "  br i1 %comparison, label %failed, label %ok");
     _(s, "failed:");
     if (greedy) restoreCounters(s, savedCounters);
-    if (counted) genPostCounter(s);
+    _(s, "  br label %failed_post_restore_counters");
+    _(s, "failed_post_restore_counters:");
+    genPostCounter(s);
     if (!greedy) savedCounters = saveCounters(s);
     _(s, "  %succ = call i32 @$second_call(%restate_t* %state, i8* %s)");
-    if (!greedy && savedCounters.length != 0) {
-      _(s, "  %comparison2 = icmp eq i32 %succ, 0");
-      _(s, "  br i1 %comparison2, label %failed2, label %ok2");
-      _(s, "failed2:");
-      restoreCounters(s, savedCounters);
-      _(s, "  br label %ok2");
-      _(s, "ok2:");
-    }
-    if (counted && !greedy) _(s, "  store i32 %counter, i32* %gep");
+    genPostCounterReturn(s, savedCounters);
     _(s, "  ret i32 %succ");
     _(s, "ok:");
     _(s, "  ret i32 1");
@@ -610,53 +620,90 @@ class Loop extends UnaryAst {
   // start this outer loop, but we save the old values in case we backtrack.
   List<int> saveCounters(State s) {
     List<int> regs = [];
-    ast.collect(regs, false);
+    ast.collect(s, regs, false);
     for (int reg in regs) {
-      if (reg >= 0) {
-        for (int i = reg; i < reg + 2; i++) {
+      if (s.isCaptureRepresentation(reg)) {
+        int capture = s.getCapture(reg);
+        for (int i = capture; i < capture + 2; i++) {
           _(s, "  %gep_capture$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $i");
           _(s, "  %cap$i = load i8*, i8** %gep_capture$i");
           _(s, "  store i8* null, i8** %gep_capture$i");
         }
-      } else {
-        int count = -reg - 1;
+      } else if (s.isCounterRepresentation(reg)) {
+        int count = s.getCounter(reg);
         _(s, "  %gep_count$count = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 $count");
         _(s, "  %count$count = load i32, i32* %gep_count$count");
         _(s, "  store i32 0, i32* %gep_count$count");
+      } else {
+        int z = s.getZeroCheck(reg);
+        _(s, "  %gep_zero_check$z = getelementptr %restate_t, %restate_t* %state, i64 0, i32 3, i32 $z");
+        _(s, "  %zero_check$z = load i8*, i8** %gep_zero_check$z");
+        _(s, "  store i8* null, i8** %gep_zero_check$z");
       }
     }
     return regs;
   }
   void restoreCounters(State s, List<int> regs) {
     for (int reg in regs) {
-      if (reg >= 0) {
-        for (int i = reg; i < reg + 2; i++) {
+      if (s.isCaptureRepresentation(reg)) {
+        int r = s.getCapture(reg);
+        for (int i = r; i < r + 2; i++) {
           _(s, "  store i8* %cap$i, i8** %gep_capture$i");
         }
-      } else {
-        int count = -reg - 1;
+      } else if (s.isCounterRepresentation(reg)) {
+        int count = s.getCounter(reg);
         _(s, "  store i32 %count$count, i32* %gep_count$count");
+      } else {
+        int z = s.getZeroCheck(reg);
+        _(s, "  store i8* %zero_check$z, i8** %gep_zero_check$z");
       }
     }
   }
   // If this loop is counted then increment the counter and check that we have
   // not exceeded the max number of iterations.
   void genPreCounter(State s) {
-    _(s, "  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 ${counter_register}");
-    _(s, "  %counter = load i32, i32* %gep");
+    if (counted) {
+      _(s, "  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 ${counter_register}");
+      _(s, "  %counter = load i32, i32* %gep");
+    }
+    if (zeroChecked) {
+      int z = zero_check_register;
+      _(s, "  %gep_zero_check = getelementptr %restate_t, %restate_t* %state, i64 0, i32 3, i32 $z");
+      _(s, "  %zero_check = load i8*, i8** %gep_zero_check");
+      if (min != 0) {
+        _(s, "  %zcounter_compare = icmp ult i32 %counter, $min");
+        _(s, "  br i1 %zcounter_compare, label %dont_check_zero, label %check_zero");
+        _(s, "check_zero:");
+      }
+      _(s, "  %zcomparison = icmp eq i8* null, %zero_check");
+      _(s, "  br i1 %zcomparison, label %store_z, label %check_against_s");
+      _(s, "check_against_s:");
+      _(s, "  %zcomparison2 = icmp eq i8* %s, %zero_check");
+      _(s, "  br i1 %zcomparison2, label %zero_fail, label %store_z");
+      _(s, "zero_fail:");
+      _(s, "  ret i32 0");
+      _(s, "store_z:");
+      _(s, "  store i8* %s, i8** %gep_zero_check");
+      _(s, "  br label %dont_check_zero");
+      _(s, "dont_check_zero:");
+    }
     if (max != null && greedy) {
       _(s, "  %maxcomp = icmp eq i32 %counter, $max");
-      _(s, "  br i1 %maxcomp, label %failed, label %counter_low_enough");
+      _(s, "  br i1 %maxcomp, label %failed_post_restore_counters, label %counter_low_enough");
       _(s, "counter_low_enough:");
     } else if (min != 0 && !greedy) {
       _(s, "  %mincomp = icmp ult i32 %counter, $min");
-      _(s, "  br i1 %mincomp, label %failed, label %counter_big_enough");
+      _(s, "  br i1 %mincomp, label %failed_post_restore_counters, label %counter_big_enough");
       _(s, "counter_big_enough:");
     }
-    if (greedy) {
+    if (counted && greedy) {
       _(s, "  %incremented = add i32 %counter, 1");
       _(s, "  store i32 %incremented, i32* %gep");
     }
+  }
+  void genPreCounterReturn(State s) {
+    if (counted && greedy) _(s, "  store i32 %counter, i32* %gep");
+    if (greedy && zeroChecked) _(s, "  store i8* %zero_check, i8** %gep_zero_check");
   }
   // If this loop is counted then restore the counter (decrementing it) and
   // check that we have hit at least the min number of iterations.
@@ -674,18 +721,32 @@ class Loop extends UnaryAst {
       _(s, "  ret i32 0;");
       _(s, "counter_low_enough:");
     }
-    if (!greedy) {
+    if (counted && !greedy) {
       _(s, "  %incremented = add i32 %counter, 1");
       _(s, "  store i32 %incremented, i32* %gep");
     }
   }
+  void genPostCounterReturn(State s, List<int> savedCounters) {
+    if (!greedy && savedCounters.length != 0) {
+      _(s, "  %comparison2 = icmp eq i32 %succ, 0");
+      _(s, "  br i1 %comparison2, label %failed2, label %ok2");
+      _(s, "failed2:");
+      restoreCounters(s, savedCounters);
+      _(s, "  br label %ok2");
+      _(s, "ok2:");
+    }
+    if (!greedy && zeroChecked) _(s, "  store i8* %zero_check, i8** %gep_zero_check");
+    if (counted && !greedy) _(s, "  store i32 %counter, i32* %gep");
+  }
   void alloc(State state) {
     if (counted) counter_register = state.counters++;
+    if (ast.minWidth == 0) zero_check_register = state.zeroChecks++;
     ast.alloc(state);
   }
-  void collect(List<int> captures, bool goIntoLoops) {
-    if (counted) captures.add(-(counter_register + 1));
-    if (goIntoLoops) ast.collect(captures, goIntoLoops);
+  void collect(State s, List<int> regs, bool goIntoLoops) {
+    if (counted) regs.add(s.counterRepresentation(counter_register));
+    if (zero_check_register != null) regs.add(s.zeroCheckRepresentation(zero_check_register));
+    if (goIntoLoops) ast.collect(s, regs, goIntoLoops);
   }
   bool isAnchored() => min > 0 && ast.isAnchored();
   int get minWidth {
@@ -760,22 +821,22 @@ class Parser {
       bool lookaroundSense;
       bool lookahead = true;
       if (accept("?")) {
-	if (mode == 'perl' && accept("#")) {
-	  int saved_pos = pos;
-	  while (!accept(")")) {
-	    if (current == "") {
-	      pos = saved_pos - 1;
-	      die("Missing end of (?#...) comment");
-	    }
-	    accept(current);
-	  }
-	  accept(")");
-	  return new EmptyAlternative();
-	}
+        if (mode == 'perl' && accept("#")) {
+          int saved_pos = pos;
+          while (!accept(")")) {
+            if (current == "") {
+              pos = saved_pos - 1;
+              die("Missing end of (?#...) comment");
+            }
+            accept(current);
+          }
+          accept(")");
+          return new EmptyAlternative();
+        }
         if (accept("<")) {
-	  if (!allowLookbehind) die("Lookbehind not available in $mode mode");
-	  lookahead = false;
-	}
+          if (!allowLookbehind) die("Lookbehind not available in $mode mode");
+          lookahead = false;
+        }
         if (accept("=")) {
           lookaround = true;
           lookaroundSense = true;
@@ -832,7 +893,7 @@ class Parser {
         if (ascii != null) {
           from = ascii.codeUnitAt(0);
         } else {
-	  checkEscape();
+          checkEscape();
           checkForNull();
           from = current.codeUnitAt(0);
           accept(current);
@@ -841,7 +902,7 @@ class Parser {
         die("Unexpected end of regexp");
       } else {
         checkForNull();
-	if (current == "-" && !allowLenient) die( "Literal dash must be escaped in character classes in $mode mode");
+        if (current == "-" && !allowLenient) die( "Literal dash must be escaped in character classes in $mode mode");
         from = current.codeUnitAt(0);
         accept(current);
       }
@@ -852,17 +913,17 @@ class Parser {
       if (accept(r"\")) {
         CharacterClass clarse = acceptClassLetter();
         if (clarse != null) {
-	  if (!allowLenient) die("Character class as end of a range");
+          if (!allowLenient) die("Character class as end of a range");
           c.mergeIn(clarse);
-	  c.add("-", "-");
-	  c.addNumeric(from, from);
+          c.add("-", "-");
+          c.addNumeric(from, from);
           continue;
-	}
+        }
         String ascii = acceptAsciiEscape();
         if (ascii != null) {
           to = ascii.codeUnitAt(0);
         } else {
-	  checkEscape();
+          checkEscape();
           checkForNull();
           to = current.codeUnitAt(0);
           accept(current);
@@ -901,15 +962,15 @@ class Parser {
       if (pos + 1 >= src.length) return r'\';
       int code = src.codeUnitAt(pos);
       if (code >= a && code <= a + 25) {
-	accept("c");
-	accept(current);
+        accept("c");
+        accept(current);
         return new String.fromCharCode(code - a - 1);
       } else if (code >= A && code <= A + 25) {
-	accept("c");
-	accept(current);
+        accept("c");
+        accept(current);
         return new String.fromCharCode(code - A - 1);
       } else {
-	return r'\';
+        return r'\';
       }
     }
     int digits = (current == "u") ? 4 : 2;
@@ -918,17 +979,17 @@ class Parser {
       if (find_curly) digits = 6;
       int hex = 0;
       for (int digit = 0; digit < digits; digit++) {
-	int code = current.codeUnitAt(0);
-	if (code >= zero && code <= zero + 9)
-	  hex = hex * 16 + code - zero;
-	else if (code >= a && code <= a + 5)
-	  hex = hex * 16 + 10 + code - a;
-	else if (code >= A && code <= A + 5)
-	  hex = hex * 16 + 10 + code - A;
+        int code = current.codeUnitAt(0);
+        if (code >= zero && code <= zero + 9)
+          hex = hex * 16 + code - zero;
+        else if (code >= a && code <= a + 5)
+          hex = hex * 16 + 10 + code - a;
+        else if (code >= A && code <= A + 5)
+          hex = hex * 16 + 10 + code - A;
         else if (find_curly && accept("}"))
           break;
-	else
-	  die("Invalid $digits-digit hex escape");
+        else
+          die("Invalid $digits-digit hex escape");
         accept(current);
       }
       if (hex == 0) die("Can't allow null characters in a Grut regexp");
@@ -1022,13 +1083,13 @@ class Parser {
       Ast not_word_left = new Lookahead(new CharacterClass.word(true), false);
       Ast word_right = new Lookahead(new CharacterClass.word(false), true);
       if (b == "b") {
-	Ast start = new Alternative(not_word_left, word_right, false);
-	Ast end = new Alternative(word_left, not_word_right, false);
-	return new Disjunction(start, end);
+        Ast start = new Alternative(not_word_left, word_right, false);
+        Ast end = new Alternative(word_left, not_word_right, false);
+        return new Disjunction(start, end);
       } else {
-	Ast in_word = new Alternative(word_left, word_right, false);
-	Ast not_in_word = new Alternative(not_word_left, not_word_right, false);
-	return new Disjunction(in_word, not_in_word);
+        Ast in_word = new Alternative(word_left, word_right, false);
+        Ast not_in_word = new Alternative(not_word_left, not_word_right, false);
+        return new Disjunction(in_word, not_in_word);
       }
     }
     return null;
@@ -1055,11 +1116,11 @@ class Parser {
     if (accept("")) die("Unexpected end of regexp");
     if (mode != "js") {
       if (current.codeUnitAt(0) >= 'a'.codeUnitAt(0) &&
-	  current.codeUnitAt(0) <= 'z'.codeUnitAt(0)) die("Unsupported escape");
+          current.codeUnitAt(0) <= 'z'.codeUnitAt(0)) die("Unsupported escape");
       if (current.codeUnitAt(0) >= 'A'.codeUnitAt(0) &&
-	  current.codeUnitAt(0) <= 'Z'.codeUnitAt(0)) die("Unsupported escape");
+          current.codeUnitAt(0) <= 'Z'.codeUnitAt(0)) die("Unsupported escape");
       if (current.codeUnitAt(0) >= '0'.codeUnitAt(0) &&
-	  current.codeUnitAt(0) <= '9'.codeUnitAt(0)) die("Unsupported escape");
+          current.codeUnitAt(0) <= '9'.codeUnitAt(0)) die("Unsupported escape");
     }
   }
 
@@ -1165,16 +1226,16 @@ class Parser {
       // capturing brackets.  All non-capturing brackets look like (?...).
       int code = src.codeUnitAt(i);
       if (code == r'\'.codeUnitAt(0)) {
-	i++;
-	continue;
+        i++;
+        continue;
       } else if (!in_class && code == '('.codeUnitAt(0)) {
-	// Check for non-capturing.
-	if (src.codeUnitAt(i + 1) == '?'.codeUnitAt(0)) continue;
-	capturingBracketCount++;
+        // Check for non-capturing.
+        if (src.codeUnitAt(i + 1) == '?'.codeUnitAt(0)) continue;
+        capturingBracketCount++;
       } else if (!in_class && code == '['.codeUnitAt(0)) {
-	in_class = true;
+        in_class = true;
       } else if (in_class && code == ']'.codeUnitAt(0)) {
-	in_class = false;
+        in_class = false;
       }
     }
   }
@@ -1206,6 +1267,10 @@ void defineTopLevel(State state, String symbol, String name) {
   for (int i = 0; i < state.counters; i++) {
     out.writeln("  %counter_gep$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 2, i32 $i");
     out.writeln("  store i32 0, i32* %counter_gep$i");
+  }
+  for (int i = 0; i < state.zeroChecks; i++) {
+    out.writeln("  %zero_check_gep$i = getelementptr %restate_t, %restate_t* %state, i64 0, i32 3, i32 $i");
+    out.writeln("  store i8* null, i8** %zero_check_gep$i");
   }
   out.writeln("  %result = call i32 @$name(%restate_t* %state, i8* %s)");
   out.writeln("  ret i32 %result");
@@ -1252,13 +1317,13 @@ void main(List<String> args) {
         topSymbol = args[++i];
         break;
       case "-m":
-	mode = args[++i];
-	if (mode != "js" && mode != "perl") {
-	  stderr.writeln("Modes available: js, perl");
-	  exitCode = 1;
-	  return;
-	}
-	break;
+        mode = args[++i];
+        if (mode != "js" && mode != "perl") {
+          stderr.writeln("Modes available: js, perl");
+          exitCode = 1;
+          return;
+        }
+        break;
       default:
         usage();
         exitCode = 1;
@@ -1312,7 +1377,7 @@ void llvmCodeGen(IOSink out, String source, String topSymbol, String mode) {
   State state = new State(out);
   defineMatch(out);
   ast.alloc(state);
-  out.writeln("%restate_t = type { i8*, [${state.captures} x i8*], [${state.counters} x i32] }");
+  out.writeln("%restate_t = type { i8*, [${state.captures} x i8*], [${state.counters} x i32], [${state.zeroChecks} x i8*] }");
   ast.gen(state, "match");
   defineTopLevel(state, topSymbol, ast.name);
   out.close();
