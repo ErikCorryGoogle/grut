@@ -234,14 +234,14 @@ Map<String, Asset> getAssets(
       if (m == null) continue;
       Map<String, String> vars = getVars(name, m);
       for (Rule rule in name.rulesWeGenerate) {
-	if (patternMatchedNamesAreCheckedIn(directory, rule.inputs,  vars)) {
-	  String outputPath =
-	      addPatternMatchedAsset(directory, filenames, rule.output, vars);
-	  Asset outputAsset = directory[outputPath];
-	  if (outputAsset.rule == null) outputAsset.rule = rule;
-	  if (outputAsset.rule != rule)
-	    throw "More than one way to make $outputPath";
-	}
+        if (patternMatchedNamesAreCheckedIn(directory, rule.inputs,  vars)) {
+          String outputPath =
+              addPatternMatchedAsset(directory, filenames, rule.output, vars);
+          Asset outputAsset = directory[outputPath];
+          if (outputAsset.rule == null) outputAsset.rule = rule;
+          if (outputAsset.rule != rule)
+            throw "More than one way to make $outputPath";
+        }
       }
     }
   }
@@ -256,21 +256,21 @@ Map<String, Asset> getAssets(
             addPatternMatchedAsset(directory, filenames, rule.output, vars);
         Asset outputAsset = directory[outputPath];
         if (outputAsset.rule == rule || outputAsset.rule == null) {
-	  outputAsset.rule = rule;
-	  bool add = (outputAsset.upstream.length == 0);
-	  for (WildcardName input in rule.inputs) {
-	    String otherPath = addPatternMatchedAsset(
-		directory, filenames, input, vars);
-	    Asset otherAsset = directory[otherPath];
-	    if (add) {
-	      outputAsset.upstream.add(otherAsset);
-	      otherAsset.downstream.add(outputAsset);
-	    }
-	  }
-	} else {
-	  if (!patternMatchedNamesAreCheckedIn(directory, outputAsset.rule.inputs, vars))
-	    throw "More than one way to make $outputPath";
-	}
+          outputAsset.rule = rule;
+          bool add = (outputAsset.upstream.length == 0);
+          for (WildcardName input in rule.inputs) {
+            String otherPath = addPatternMatchedAsset(
+                directory, filenames, input, vars);
+            Asset otherAsset = directory[otherPath];
+            if (add) {
+              outputAsset.upstream.add(otherAsset);
+              otherAsset.downstream.add(outputAsset);
+            }
+          }
+        } else {
+          if (!patternMatchedNamesAreCheckedIn(directory, outputAsset.rule.inputs, vars))
+            throw "More than one way to make $outputPath";
+        }
       }
     }
   }

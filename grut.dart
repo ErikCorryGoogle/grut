@@ -22,10 +22,13 @@ class State {
 }
 
 abstract class Ast {
+  Ast(this.backwards);
   static int ctr = 0;
   String name = "f${ctr++}";
   int get minWidth;
   int get maxWidth;
+  bool get simple => false;
+  bool backwards = false;
   void collect(State s, List<int> regs, bool goIntoLoops) {}
 
   void _(State state, Object o) {
@@ -57,10 +60,25 @@ abstract class Ast {
     _(s, "  ret i32 %result");
     _(s, "}");
   }
+  // If we are in continuation mode (the successor is passed to us)
+  // then we check for failure by checking for a zero result.
+  // If we are in call-return mode, then we return < 0 for failure (> 0 if the
+  // regexp is in backwards mode inside a lookbehind).
+  String check_for_failure(String succ) {
+    if (succ != null) return "icmp eq i32 0,";
+    if (backwards) return "icmp slt i32 0,";
+    return "icmp sgt i32 0,";
+  }
+  int failure_code(String succ) {
+    if (succ != null) return 0;
+    if (backwards) return 1;
+    return -1;
+  }
+  String get compare_failure => "icmp eq i32 0,";
 }
 
 abstract class BinaryAst extends Ast {
-  BinaryAst(this.l, this.r);
+  BinaryAst(this.l, this.r, bool backwards) : super(backwards);
   Ast l, r;
   int minWidthCached;
   bool minWidthIsCalculated = false;
@@ -85,8 +103,7 @@ abstract class BinaryAst extends Ast {
 }
 
 class Dot extends Single {
-  Dot(this.backwards);
-  bool backwards;
+  Dot(bool backwards) : super(backwards);
   String get condition => "ne";
   int get code => 0;
   String toString() => ".";
@@ -94,9 +111,11 @@ class Dot extends Single {
   int get offset => backwards ? -1 : 0;
   int get minWidth => 1;
   int get maxWidth => 1;
+  bool get simple => true;
 }
 
 class End extends Single {
+  End(bool backwards) : super(backwards);
   String get condition => "eq";
   int get code => 0;  // Match null character at end of string.
   String toString() => "\$";
@@ -104,14 +123,14 @@ class End extends Single {
   int get offset => 0;
   int get minWidth => 0;
   int get maxWidth => 0;
+  bool get simple => true;
 }
 
 class Literal extends Single {
-  Literal(this.char, this.backwards) { escaped = char; }
-  Literal.named(this.char, this.escaped, this.backwards);
+  Literal(this.char, bool backwards) : super(backwards) { escaped = char; }
+  Literal.named(this.char, this.escaped, bool backwards) : super(backwards);
   String char;
   String escaped;
-  bool backwards;
 
   String get condition => "eq";
   int get code => char.codeUnitAt(0);
@@ -120,6 +139,7 @@ class Literal extends Single {
   int get offset => backwards ? -1 : 0;
   int get minWidth => 1;
   int get maxWidth => 1;
+  bool get simple => true;
 }
 
 class Range {
@@ -144,9 +164,8 @@ class Range {
 }
 
 class Backreference extends Ast {
-  Backreference(this.ref, this.backwards, this.jsMode);
+  Backreference(this.ref, bool backwards, this.jsMode) : super(backwards);
   int ref;
-  bool backwards;
   bool jsMode;
   String toString() => r'\$ref';
   int get minWidth => 0;
@@ -164,7 +183,7 @@ class Backreference extends Ast {
     _(s, "  %offset_return = alloca i32, align 4");
     _(s, "  %result = call i32 @checkBackref(i8* %s, i8* %open, i8* %close, i8* %start, "
          "  i32* %offset_return, i32 ${backwards ? 1 : 0}, i32 ${jsMode ? 1 : 0})");
-    _(s, "  %comparison = icmp eq i32 %result, 0");
+    _(s, "  %comparison = icmp eq i32 0, %result");
     _(s, "  br i1 %comparison, label %fail, label %success");
     _(s, "fail:");
     _(s, "  ret i32 0");
@@ -178,15 +197,15 @@ class Backreference extends Ast {
 }
 
 class CharacterClass extends Ast {
-  CharacterClass(this.backwards);
-  CharacterClass.digit(this.backwards) { add("0", "9"); }
-  CharacterClass.word(this.backwards) {
+  CharacterClass(bool backwards) : super(backwards);
+  CharacterClass.digit(bool backwards) : super(backwards) { add("0", "9"); }
+  CharacterClass.word(bool backwards) : super(backwards) {
     add("0", "9");
     add("A", "Z");
     add("_", "_");
     add("a", "z");
   }
-  CharacterClass.whiteSpace(this.backwards) {
+  CharacterClass.whiteSpace(bool backwards) : super(backwards) {
     add("\t", "\r");
     add(" ", " ");
   }
@@ -205,7 +224,6 @@ class CharacterClass extends Ast {
     self.negate();
     return self;
   }
-  bool backwards;
   List<Range> ranges = new List<Range>();
 
   void add(String from, String to) {
@@ -291,9 +309,11 @@ class CharacterClass extends Ast {
   String toString() => "[${ranges.join()}]";
   int get minWidth => 1;
   int get maxWidth => 1;
+  bool get simple => false;
 }
 
 class Start extends Ast {
+  Start(bool backwards) : super(backwards);
   String toString() => "^";
   void gen(State s, String successor) {
     _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
@@ -310,17 +330,21 @@ class Start extends Ast {
   }
   bool isAnchored() => true;
   int get minWidth => 0;
-  int get maxWidth => 1;
+  int get maxWidth => 0;
+  // Even though it is simple there's no benefit from being able to generate it
+  // in a simple loop.
+  bool get simple => false;
 }
 
 // Single char superclass.
 abstract class Single extends Ast {
+  Single(bool backwards) : super(backwards);
   String get condition;
   int get code;
   int get advance;
   int get offset;
 
-  void gen(State s, String successor) {
+  void gen(State s, String succ) {
     _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
     // char c = *s
     if (offset == -1) {
@@ -331,7 +355,7 @@ abstract class Single extends Ast {
       _(s, "  %start_compare = icmp eq i8* %s, %start");
       _(s, "  br i1 %start_compare, label %at_start, label %load_char");
       _(s, "at_start:");
-      _(s, "  ret i32 0");  // Fail.
+      _(s, "  ret i32 ${failure_code(succ)}");
       _(s, "load_char:");
       _(s, "  %gep = getelementptr i8, i8* %s, i64 $offset");
       _(s, "  %c = load i8, i8* %gep, align 1");
@@ -340,36 +364,55 @@ abstract class Single extends Ast {
       _(s, "load_char:");
       _(s, "  %c = load i8, i8* %s, align 1");
     }
-    // bool comparison = c == ascii_code_of_literal
     _(s, "  %comparison = icmp $condition i8 %c, $code");
-    // if comparison goto matched else goto got_result;
-    _(s, "  br i1 %comparison, label %matched, label %got_result");
+    _(s, "  br i1 %comparison, label %matched, label %no_match");
+    _(s, "no_match:");
+    _(s, "  ret i32 ${failure_code(succ)}");
     _(s, "matched:");
-    // char* next = s +- 1;
+    if (succ == null) {
+      _(s, "  ret i32 $advance");  // Width indicating success.
+      _(s, "}");
+      return;
+    }
     _(s, "  %next = getelementptr i8, i8* %s, i64 $advance");
-    // int succ_result = f42(next);
-    _(s, "  %succ_result = call i32 @$successor(%restate_t* %state, i8* %next)");
-    // goto got_result;
-    _(s, "  br label %got_result");
-    _(s, "got_result:");
-    // int result = phi(succ_result, 0);
-    _(s, "  %result = phi i32 [ %succ_result, %matched ], [ 0, %load_char ]");
-    // return result
-    _(s, "  ret i32 %result");
+    _(s, "  %succ_result = call i32 @$succ(%restate_t* %state, i8* %next)");
+    _(s, "  ret i32 %succ_result");
     _(s, "}");
   }
 }
 
 // A series of terms matched one after the other.
 class Alternative extends BinaryAst {
-  Alternative(Ast l, Ast r, this.backwards) : super(l, r);
-  bool backwards;
+  Alternative(Ast l, Ast r, bool backwards) : super(l, r, backwards);
 
   String toString() => "($l$r)";
-  void gen(State state, String succ) {
-    forward(state, l.name);
-    l.gen(state, r.name);
-    r.gen(state, succ);
+  void gen(State s, String succ) {
+    if (succ != null) {
+      forward(s, l.name);
+      l.gen(s, r.name);
+      r.gen(s, succ);
+    } else {
+      _(s, 'define internal i32 @$name(%restate_t* %state, i8* %s) {');
+      _(s, '  %left = call i32 @${l.name}(%restate_t* %state, i8* %s)');
+      _(s, '  %comparison = ${check_for_failure(succ)} %left');
+      _(s, '  br i1 %comparison, label %left_failed, label %left_succeded');
+      _(s, 'left_failed:');
+      _(s, '  ret i32 %left');
+      _(s, 'left_succeded:');
+      // In this mode we return the number of characters matched if we succeed.
+      _(s, "  %next = getelementptr i8, i8* %s, i32 %left");
+      _(s, '  %right = call i32 @${r.name}(%restate_t* %state, i8* %next)');
+      _(s, '  %comparison2 = ${check_for_failure(succ)} %right');
+      _(s, '  br i1 %comparison2, label %right_failed, label %right_succeded');
+      _(s, 'right_failed:');
+      _(s, '  ret i32 %right');
+      _(s, 'right_succeded:');
+      _(s, '  %sum = add i32 %left, %right');
+      _(s, '  ret i32 %sum');
+      _(s, "}");
+      l.gen(s, null);
+      r.gen(s, null);
+    }
   }
   bool isAnchored() {
     if (l.maxWidth == 0) return l.isAnchored() || r.isAnchored();
@@ -400,33 +443,41 @@ class Alternative extends BinaryAst {
     if (lw == null) return null;
     return maxWidthCached = lw + rw;
   }
+  bool get simple => l.simple && r.simple;
 }
 
 class EmptyAlternative extends Ast {
+  EmptyAlternative(bool backwards) : super(backwards);
   String toString() => "";
-  void gen(State state, String succ) {
-    forward(state, succ);
+  void gen(State s, String succ) {
+    if (succ != null) {
+      forward(s, succ);
+    } else {
+      _(s, 'define internal i32 @$name(%restate_t* %state, i8* %s) {');
+      _(s, "  ret i32 0");  // Success, no offset.
+      _(s, "}");
+    }
   }
   int get minWidth => 0;
   int get maxWidth => 0;
+  bool get simple => true;
 }
 
 // A series of alternatives separated by '|'.
-class Disjunction extends BinaryAst{
-  Disjunction(Ast l, Ast r) : super(l, r);
+class Disjunction extends BinaryAst {
+  Disjunction(Ast l, Ast r, bool backwards) : super(l, r, backwards);
 
   String toString() => "($l|$r)";
   void gen(State s, String succ) {
     _(s, 'define internal i32 @$name(%restate_t* %state, i8* %s) {');
     _(s, '  %left = call i32 @${l.name}(%restate_t* %state, i8* %s)');
-    _(s, '  %comparison = icmp eq i32 %left, 0');
-    _(s, '  br i1 %comparison, label %left_failed, label %got_result');
+    _(s, '  %comparison = ${check_for_failure(succ)} %left');
+    _(s, '  br i1 %comparison, label %left_failed, label %left_succeded');
+    _(s, 'left_succeded:');
+    _(s, '  ret i32 %left');
     _(s, 'left_failed:');
     _(s, '  %right = call i32 @${r.name}(%restate_t* %state, i8* %s)');
-    _(s, '  br label %got_result');
-    _(s, 'got_result:');
-    _(s, '  %result = phi i32 [ %right, %left_failed ], [ 1, %0 ]');
-    _(s, '  ret i32 %result');
+    _(s, '  ret i32 %right');
     _(s, '}');
     l.gen(s, succ);
     r.gen(s, succ);
@@ -446,10 +497,17 @@ class Disjunction extends BinaryAst{
     if (lw == null) return null;
     return maxWidthCached = max(lw, rw);
   }
+  bool get simple {
+    if (!l.simple || !r.simple) return false;
+    // We could be more clever here if we can tell the ends of the two
+    // different matches from each other when unwinding.
+    return l.minWidth == r.minWidth && l.minWidth == l.maxWidth &&
+        r.minWidth == r.maxWidth;
+  }
 }
 
 abstract class UnaryAst extends Ast {
-  UnaryAst(this.ast);
+  UnaryAst(this.ast, bool backwards) : super(backwards);
   Ast ast;
   void dump() {
     super.dump();
@@ -477,29 +535,40 @@ abstract class UnaryAst extends Ast {
 }
 
 class Lookahead extends UnaryAst {
-  Lookahead(Ast ast, this.sense) : super(ast);
+  Lookahead(Ast ast, bool backwards, this.sense) : super(ast, backwards);
   bool sense;
   void gen(State s, String succ) {
+    ast.gen(s, "match");
     _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
     _(s, "  %result = call i32 @${ast.name}(%restate_t* %state, i8* %s)");
+    // The ast is never generated in recursion mode (always continuation mode),
+    // so we check for zero meaning failure.
     _(s, "  %comparison = icmp ${sense ? "ne" : "eq"} i32 %result, 0");
     _(s, "  br i1 %comparison, label %ok, label %failed");
     _(s, "failed:");
-    _(s, "  ret i32 0");
+    _(s, "  ret i32 ${failure_code(succ)}");
     _(s, "ok:");
     if (!sense) ClearCaptures(s);
+    if (succ == null) {
+      _(s, "ret i32 0");  // Success.
+      _(s, "}");
+      return;
+    }
     _(s, "  %result2 = call i32 @$succ(%restate_t* %state, i8* %s)");
     if (sense) {
-      _(s, "  %comparison2 = icmp eq i32 %result2, 0");
+      _(s, "  %comparison2 = $compare_failure %result2");
       _(s, "  br i1 %comparison2, label %failed2, label %ok2");
       _(s, "failed2:");
       ClearCaptures(s);
-      _(s, "  ret i32 0");
+      _(s, "  ret i32 ${failure_code(succ)}");
       _(s, "ok2:");
     }
-    _(s, "  ret i32 %result2");
+    if (succ == null) {
+      _(s, "  ret i32 0");  // Success.
+    } else {
+      _(s, "  ret i32 %result2");
+    }
     _(s, "}");
-    ast.gen(s, "match");
   }
   void ClearCaptures(State s) {
     List<int> captures = [];
@@ -515,11 +584,14 @@ class Lookahead extends UnaryAst {
       // No need to reset counters or zero width check registers since they are not visible to the API.
     }
   }
+  // You might think lookaheads are simple since they are constant width, but
+  // positive lookaheads are not simple because you have to clear captures when
+  // backtracking.
+  bool get simple => !sense || ast.simple;
 }
 
 class Capturing extends UnaryAst {
-  Capturing(Ast ast, this.backwards) : super(ast);
-  bool backwards;
+  Capturing(Ast ast, bool backwards) : super(ast, backwards);
   int capture_register;
   // TODO: Set registers when capturing.
   void gen(State s, String succ) {
@@ -529,7 +601,7 @@ class Capturing extends UnaryAst {
     _(s, "  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $first");
     _(s, "  store i8* %s, i8** %gep");
     _(s, "  %result = call i32 @${ast.name}(%restate_t* %state, i8* %s)");
-    _(s, "  %comparison = icmp eq i32 %result, 0");
+    _(s, "  %comparison = $compare_failure %result");
     _(s, "  br i1 %comparison, label %failed, label %ok");
     _(s, "failed:");
     _(s, "  store i8* null, i8** %gep");
@@ -541,7 +613,7 @@ class Capturing extends UnaryAst {
     _(s, "  %gep = getelementptr %restate_t, %restate_t* %state, i64 0, i32 1, i32 $second");
     _(s, "  store i8* %s, i8** %gep");
     _(s, "  %result = call i32 @$succ(%restate_t* %state, i8* %s)");
-    _(s, "  %comparison = icmp eq i32 %result, 0");
+    _(s, "  %comparison = icmp eq i32 0, %result");
     _(s, "  br i1 %comparison, label %failed, label %ok");
     _(s, "failed:");
     _(s, "  store i8* null, i8** %gep");
@@ -562,12 +634,15 @@ class Capturing extends UnaryAst {
   }
   String toString() => "($ast)";
   bool isAnchored() => ast.isAnchored();
+  // We could make Capturing simple with some work, but for now it's not
+  // simple, so (.)* will overflow your stack.
+  bool get simple => false;
 }
 
 class Loop extends UnaryAst {
-  Loop(Ast ast, this.min, this.max, this.nonGreedy) : super(ast);
-  Loop.asterisk(Ast ast, this.nonGreedy) : super(ast);
-  Loop.plus(Ast ast, this.nonGreedy) : super(ast) { min = 1; }
+  Loop(Ast ast, this.min, this.max, this.nonGreedy, bool backwards) : super(ast, backwards);
+  Loop.asterisk(Ast ast, this.nonGreedy, bool backwards) : super(ast, backwards);
+  Loop.plus(Ast ast, this.nonGreedy, bool backwards) : super(ast, backwards) { min = 1; }
   int min = 0;
   int max = null;  // Nullable - null means no max.
   bool nonGreedy;
@@ -592,6 +667,14 @@ class Loop extends UnaryAst {
   // successor - despite the name "Loop", we are implementing this using
   // recursion.
   void gen(State s, String succ) {
+    if (max == 0) {
+      forward(s, succ);
+      return;
+    }
+    if (greedy && ast.simple) {
+      simpleGen(s, succ);
+      return;
+    }
     List<int> savedCounters;
     String first_call = greedy ? ast.name : succ;
     String second_call = greedy ? succ : ast.name;
@@ -600,7 +683,7 @@ class Loop extends UnaryAst {
     if (greedy) savedCounters = saveCounters(s);
     _(s, "  %result = call i32 @$first_call(%restate_t* %state, i8* %s)");
     genPreCounterReturn(s);
-    _(s, "  %comparison = icmp eq i32 %result, 0");
+    _(s, "  %comparison = $compare_failure %result");
     _(s, "  br i1 %comparison, label %failed, label %ok");
     _(s, "failed:");
     if (greedy) restoreCounters(s, savedCounters);
@@ -728,7 +811,7 @@ class Loop extends UnaryAst {
   }
   void genPostCounterReturn(State s, List<int> savedCounters) {
     if (!greedy && savedCounters.length != 0) {
-      _(s, "  %comparison2 = icmp eq i32 %succ, 0");
+      _(s, "  %comparison2 = $compare_failure %succ");
       _(s, "  br i1 %comparison2, label %failed2, label %ok2");
       _(s, "failed2:");
       restoreCounters(s, savedCounters);
@@ -737,6 +820,86 @@ class Loop extends UnaryAst {
     }
     if (!greedy && zeroChecked) _(s, "  store i8* %zero_check, i8** %gep_zero_check");
     if (counted && !greedy) _(s, "  store i32 %counter, i32* %gep");
+  }
+  // Generate a loop by calling the body and expecting it to return a number of
+  // characters matched.  This avoids stack overflow on some greedy loops.
+  void simpleGen(State s, String succ) {
+    _(s, "define internal i32 @$name(%restate_t* %state, i8* %s) {");
+    _(s, "  %posn = alloca i8*");
+    if (counted) _(s, "  %loop = alloca i32");
+    _(s, "  store i8* %s, i8** %posn");
+    if (counted) _(s, "  store i32 0, i32* %loop");
+    _(s, "  br label %loop_top");
+    _(s, "loop_top:");
+    _(s, "  %pos_loaded0 = load i8*, i8** %posn");
+    _(s, "  %body = call i32 @${ast.name}(%restate_t* %state, i8* %pos_loaded0)");
+    _(s, "  %comparison = ${check_for_failure(null)} %body");
+    _(s, "  br i1 %comparison, label %body_failure, label %body_success");
+    _(s, "body_failure:");
+    if (min != 0) {
+      _(s, "  %loop_loaded = load i32, i32* %loop");
+      _(s, "  %min_comparison = icmp ult i32 %loop_loaded, $min");
+      _(s, "  br i1 %min_comparison, label %total_failure, label %min_check_success");
+      _(s, "total_failure:");
+      _(s, "  ret i32 0");
+      _(s, "min_check_success:");
+    }
+    _(s, "  br label %try_successor");
+    _(s, "try_successor:");
+    _(s, "  %pos_loaded = load i8*, i8** %posn");
+    _(s, "  %succ_return = call i32 @${succ}(%restate_t* %state, i8* %pos_loaded)");
+    _(s, "  %succ_comparison = $compare_failure %succ_return");
+    _(s, "  br i1 %succ_comparison, label %succ_failure, label %succ_success");
+    _(s, "succ_success:");
+    _(s, "  ret i32 1");
+    _(s, "succ_failure:");
+    if (counted) {
+      // Successor failed, time to backtrack, but first check if we are totally
+      // backtracked.
+      _(s, "  %loop_loaded2 = load i32, i32* %loop");
+      _(s, "  %min_comparison2 = icmp eq i32 %loop_loaded2, $min");
+    } else {
+      // If there's no counter, then check whether we are back at the starting
+      // point.
+      _(s, "  %pos_loaded2 = load i8*, i8** %posn");
+      _(s, "  %min_comparison2 = icmp eq i8* %pos_loaded2, %s");
+    }
+    _(s, "  br i1 %min_comparison2, label %total_failure2, label %min_check_success2");
+    _(s, "total_failure2:");
+    _(s, "  ret i32 0");
+    _(s, "min_check_success2:");
+    // If variable width things can ever be simple then this add needs to get
+    // more complicated, asking the ast how far to step back.
+    _(s, "  %pos_loaded3 = load i8*, i8** %posn");
+    _(s, "  %pos_loaded4 = getelementptr i8, i8* %pos_loaded3, i64 ${backwards ? '' : '-'}${ast.minWidth}");
+    _(s, "  store i8* %pos_loaded4, i8** %posn");
+    if (counted) {
+      _(s, "  %loop_loaded3 = load i32, i32* %loop");
+      _(s, "  %loop_loaded4 = sub i32 %loop_loaded3, 1");
+      _(s, "  store i32 %loop_loaded4, i32* %loop");
+    }
+    _(s, "  br label %body_failure");
+
+    // On the other hand if the body succeeded.
+    _(s, "body_success:");
+    if (counted) {
+      _(s, "  %loop_loaded5 = load i32, i32* %loop");
+      _(s, "  %loop_loaded6 = add i32 %loop_loaded5, 1");
+      _(s, "  store i32 %loop_loaded6, i32* %loop");
+    }
+    _(s, "  %pos_loaded5 = load i8*, i8** %posn");
+    // Equivalently add %body (not equivalent if the body can one day be non-constant-width).
+    _(s, "  %pos_loaded6 = getelementptr i8, i8* %pos_loaded5, i64 ${backwards ? '-' : ''}${ast.minWidth}");
+    _(s, "  store i8* %pos_loaded6, i8** %posn");
+    if (max != null) {
+      _(s, "  %max_comparison = icmp eq i32 %loop_loaded6, $max");
+      _(s, "  br i1 %max_comparison, label %try_successor, label %loop_top");
+    } else {
+      _(s, "  br label %loop_top");
+    }
+    _(s, "}");
+    // Generate body in non-continuation (call-return) mode.
+    ast.gen(s, null);
   }
   void alloc(State state) {
     if (counted) counter_register = state.counters++;
@@ -809,7 +972,7 @@ class Parser {
     if (!ast.isAnchored()) {
       // For non-sticky regexps (which is the only thing we support) we prepend
       // a non-greedy loop).
-      ast = new Alternative(new Loop.asterisk(new Dot(false), true), ast, false);
+      ast = new Alternative(new Loop.asterisk(new Dot(false), true, backwards), ast, false);
     }
     return ast;
   }
@@ -831,7 +994,7 @@ class Parser {
             accept(current);
           }
           accept(")");
-          return new EmptyAlternative();
+          return new EmptyAlternative(backwards);
         }
         if (accept("<")) {
           if (!allowLookbehind) die("Lookbehind not available in $mode mode");
@@ -859,7 +1022,7 @@ class Parser {
         ast = parseDisjunction();
       }
       if (capturing) ast = new Capturing(ast, backwards);
-      if (lookaround) ast = new Lookahead(ast, lookaroundSense);
+      if (lookaround) ast = new Lookahead(ast, backwards, lookaroundSense);
       expect(")");
       return ast;
     }
@@ -1078,18 +1241,18 @@ class Parser {
   Ast acceptBoundary() {
     String b = current;
     if (accept("b") || accept("B")) {
-      Ast word_left = new Lookahead(new CharacterClass.word(true), true);
-      Ast not_word_right = new Lookahead(new CharacterClass.word(false), false);
-      Ast not_word_left = new Lookahead(new CharacterClass.word(true), false);
-      Ast word_right = new Lookahead(new CharacterClass.word(false), true);
+      Ast word_left = new Lookahead(new CharacterClass.word(true), true, true);
+      Ast not_word_right = new Lookahead(new CharacterClass.word(false), false, false);
+      Ast not_word_left = new Lookahead(new CharacterClass.word(true), true, false);
+      Ast word_right = new Lookahead(new CharacterClass.word(false), false, true);
       if (b == "b") {
         Ast start = new Alternative(not_word_left, word_right, false);
         Ast end = new Alternative(word_left, not_word_right, false);
-        return new Disjunction(start, end);
+        return new Disjunction(start, end, backwards);
       } else {
         Ast in_word = new Alternative(word_left, word_right, false);
         Ast not_in_word = new Alternative(not_word_left, not_word_right, false);
-        return new Disjunction(in_word, not_in_word);
+        return new Disjunction(in_word, not_in_word, backwards);
       }
     }
     return null;
@@ -1125,18 +1288,18 @@ class Parser {
   }
 
   Ast parseTerm() {
-    if (accept("^")) return new Start();
-    if (accept("\$")) return new End();
+    if (accept("^")) return new Start(backwards);
+    if (accept("\$")) return new End(backwards);
     Ast ast = parseAtom();
     if (ast == null) return null;
     if (accept("?")) {
-      Ast empty = new EmptyAlternative();
+      Ast empty = new EmptyAlternative(backwards);
       if (accept("?"))
-        return new Disjunction(empty, ast);  // Non-greedy "?".
-      return new Disjunction(ast, empty);  // Greedy "?".
+        return new Disjunction(empty, ast, backwards);  // Non-greedy "?".
+      return new Disjunction(ast, empty, backwards);  // Greedy "?".
     }
-    if (accept("*")) return new Loop.asterisk(ast, accept("?"));
-    if (accept("+")) return new Loop.plus(ast, accept("?"));
+    if (accept("*")) return new Loop.asterisk(ast, accept("?"), backwards);
+    if (accept("+")) return new Loop.plus(ast, accept("?"), backwards);
     if (accept("{")) {
       // .{2}   - exactly two matches.
       // .{2,}  - at least two matches.
@@ -1145,14 +1308,14 @@ class Parser {
       int max = accept(",") ? acceptNumber() : min;
       if (max != null && max < min) die("min must be <= max");
       expect("}");
-      return new Loop(ast, min, max, accept("?"));
+      return new Loop(ast, min, max, accept("?"), backwards);
     }
     return ast;
   }
 
   Ast parseAlternative() {
     Ast ast = parseTerm();
-    if (ast == null) return new EmptyAlternative();
+    if (ast == null) return new EmptyAlternative(backwards);
     while (true) {
       Ast next = parseTerm();
       if (next == null) return ast;
@@ -1166,7 +1329,7 @@ class Parser {
   Ast parseDisjunction() {
     Ast ast = parseAlternative();
     while (accept("|")) {
-      ast = new Disjunction(ast, parseAlternative());
+      ast = new Disjunction(ast, parseAlternative(), backwards);
     }
     return ast;
   }

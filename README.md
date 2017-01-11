@@ -17,4 +17,4 @@ Features:
 Known issues:
 * Can't match a null character, and expects a null terminated string.
 * No Unicode support.
-* Large input strings can overflow the stack when matching.
+* No case independence.
