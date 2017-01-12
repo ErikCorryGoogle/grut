@@ -31,6 +31,40 @@ abstract class Ast {
   bool backwards = false;
   void collect(State s, List<int> regs, bool goIntoLoops) {}
 
+  factory Ast.literalCode(int code, bool backwards) {
+    return new Ast.literalString(new String.fromCharCode(code), backwards);
+  }
+  factory Ast.literalString(String char, bool backwards) {
+    int unicode = char.codeUnitAt(0);
+    if (unicode < 0x80) {
+      if ((unicode >= 'a'.codeUnitAt(0) && unicode <= 'z'.codeUnitAt(0)) ||
+          (unicode >= 'A'.codeUnitAt(0) && unicode <= 'Z'.codeUnitAt(0)) ||
+          (unicode >= '0'.codeUnitAt(0) && unicode <= '9'.codeUnitAt(0)) ||
+	  char == ' ') {
+	return new Literal(char, backwards);
+      } else if (unicode >= ' '.codeUnitAt(0)) {
+	return new Literal.named(unicode, r'\$char', backwards);
+      } else {
+	return new Literal.hex(unicode, backwards);
+      }
+    }
+    if (unicode < 0x800) {
+      Ast part1 = new Literal.hex(0xc0 + (unicode >> 6), backwards);
+      Ast part2 = new Literal.hex(0x80 + (unicode & 0x3f), backwards);
+      if (backwards)
+        return new Alternative(part2, part1, backwards);
+      else
+        return new Alternative(part1, part2, backwards);
+    }
+    Ast part1 = new Literal.hex(0xe0 + (unicode >> 12), backwards);
+    Ast part2 = new Literal.hex(0x80 + ((unicode >> 6) & 0x3f), backwards);
+    Ast part3 = new Literal.hex(0x80 + (unicode & 0x3f), backwards);
+    if (backwards)
+      return new Alternative(new Alternative(part3, part2, backwards), part1, backwards);
+    else
+      return new Alternative(new Alternative(part1, part2, backwards), part3, backwards);
+  }
+
   void _(State state, Object o) {
     state.out.writeln(o);
   }
@@ -127,13 +161,22 @@ class End extends Single {
 }
 
 class Literal extends Single {
-  Literal(this.char, bool backwards) : super(backwards) { escaped = char; }
-  Literal.named(this.char, this.escaped, bool backwards) : super(backwards);
-  String char;
+  // Printable literal.
+  Literal(String char, bool backwards) : super(backwards) {
+    code = char.codeUnitAt(0);
+    escaped = char;
+  }
+  // Sort-of printable literal.
+  Literal.named(this.code, this.escaped, bool backwards) : super(backwards);
+  // Unprintable literal UTF8 code unit.
+  Literal.hex(this.code, bool backwards) : super(backwards) {
+    escaped = "0x${code.toRadixString(16).padLeft(2, "0")}";
+  }
+  // See also Ast.literal for random Unicode code points.
+  int code;
   String escaped;
 
   String get condition => "eq";
-  int get code => char.codeUnitAt(0);
   String toString() => escaped;
   int get advance => backwards ? -1 : 1;
   int get offset => backwards ? -1 : 0;
@@ -1036,7 +1079,7 @@ class Parser {
       die("Literal { and } must be escaped in $mode mode");
     // TODO: Should we (unlike Dart and JS) disallow a bare ']' here?
     checkForNull();
-    Ast ast = new Literal(current, backwards);
+    Ast ast = new Ast.literalString(current, backwards);
     accept(current);
     return ast;
   }
@@ -1052,9 +1095,9 @@ class Parser {
           c.mergeIn(clarse);
           continue;
         }
-        String ascii = acceptAsciiEscape();
+        int ascii = acceptAsciiEscape();
         if (ascii != null) {
-          from = ascii.codeUnitAt(0);
+          from = ascii;
         } else {
           checkEscape();
           checkForNull();
@@ -1082,9 +1125,9 @@ class Parser {
           c.addNumeric(from, from);
           continue;
         }
-        String ascii = acceptAsciiEscape();
+        int ascii = acceptAsciiEscape();
         if (ascii != null) {
-          to = ascii.codeUnitAt(0);
+          to = ascii;
         } else {
           checkEscape();
           checkForNull();
@@ -1106,13 +1149,13 @@ class Parser {
     return c;
   }
 
-  String acceptAsciiEscape() {
-    if (accept("n")) return "\n";
-    if (accept("f")) return "\f";
-    if (accept("v")) return "\v";
-    if (accept("t")) return "\t";
-    if (accept(r"\")) return r"\";
-    if (accept("r")) return "\r";
+  int acceptAsciiEscape() {
+    if (accept("n")) return "\n".codeUnitAt(0);
+    if (accept("f")) return "\f".codeUnitAt(0);
+    if (accept("v")) return "\v".codeUnitAt(0);
+    if (accept("t")) return "\t".codeUnitAt(0);
+    if (accept(r"\")) return r"\".codeUnitAt(0);
+    if (accept("r")) return "\r".codeUnitAt(0);
 
     int zero = '0'.codeUnitAt(0);
     int a = 'a'.codeUnitAt(0);
@@ -1122,18 +1165,18 @@ class Parser {
       // Remember that pos is 1 ahead of current.
       // We have to peek ahead here because in js mode \cz means control-Z, but
       // \c0 means '\c0', including a literal backslash!
-      if (pos + 1 >= src.length) return r'\';
+      if (pos + 1 >= src.length) return r'\'.codeUnitAt(0);
       int code = src.codeUnitAt(pos);
       if (code >= a && code <= a + 25) {
         accept("c");
         accept(current);
-        return new String.fromCharCode(code - a - 1);
+        return code - a - 1;
       } else if (code >= A && code <= A + 25) {
         accept("c");
         accept(current);
-        return new String.fromCharCode(code - A - 1);
+        return code - A - 1;
       } else {
-        return r'\';
+        return r'\'.codeUnitAt(0);
       }
     }
     int digits = (current == "u") ? 4 : 2;
@@ -1157,7 +1200,7 @@ class Parser {
       }
       if (hex == 0) die("Can't allow null characters in a Grut regexp");
       if (hex > 0x10ffff) die("Unicode escape out of range");
-      return new String.fromCharCode(hex);
+      return hex;
     }
 
     return null;
@@ -1225,7 +1268,7 @@ class Parser {
 
   Ast escapeGate(int code) {
     if (code == 0) die("Can't allow null characters in a Grut regexp");
-    return new Literal(new String.fromCharCode(code), backwards);
+    return new Ast.literalCode(code, backwards);
   }
 
   bool isDecimal(String c) {
@@ -1259,9 +1302,8 @@ class Parser {
   }
 
   Ast parseEscape() {
-    String char = current;
-    String ascii = acceptAsciiEscape();
-    if (ascii != null) return new Literal.named(ascii, "\\$char", backwards);
+    int ascii = acceptAsciiEscape();
+    if (ascii != null) return new Ast.literalCode(ascii, backwards);
     Ast boundary = acceptBoundary();
     if (boundary != null) return boundary;
     CharacterClass clarse = acceptClassLetter();
@@ -1270,7 +1312,7 @@ class Parser {
     if (esc != null) return esc;
     checkEscape();
     checkForNull();
-    Ast ast = new Literal(current, backwards);
+    Ast ast = new Ast.literalString(current, backwards);
     accept(current);
     return ast;
   }
@@ -1320,9 +1362,9 @@ class Parser {
       Ast next = parseTerm();
       if (next == null) return ast;
       if (backwards)
-        ast = new Alternative(next, ast, true);
+        ast = new Alternative(next, ast, backwards);
       else
-        ast = new Alternative(ast, next, false);
+        ast = new Alternative(ast, next, backwards);
     }
   }
 
