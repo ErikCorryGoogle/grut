@@ -31,38 +31,44 @@ abstract class Ast {
   bool backwards = false;
   void collect(State s, List<int> regs, bool goIntoLoops) {}
 
-  factory Ast.literalCode(int code, bool backwards) {
-    return new Ast.literalString(new String.fromCharCode(code), backwards);
-  }
-  factory Ast.literalString(String char, bool backwards) {
-    int unicode = char.codeUnitAt(0);
+  factory Ast.literalCode(int unicode, bool backwards) {
+    bool b = backwards;
     if (unicode < 0x80) {
       if ((unicode >= 'a'.codeUnitAt(0) && unicode <= 'z'.codeUnitAt(0)) ||
           (unicode >= 'A'.codeUnitAt(0) && unicode <= 'Z'.codeUnitAt(0)) ||
           (unicode >= '0'.codeUnitAt(0) && unicode <= '9'.codeUnitAt(0)) ||
-	  char == ' ') {
-	return new Literal(char, backwards);
+          unicode == ' '.codeUnitAt(0)) {
+        return new Literal(new String.fromCharCode(unicode), b);
       } else if (unicode >= ' '.codeUnitAt(0)) {
-	return new Literal.named(unicode, r'\$char', backwards);
+        return new Literal.named(unicode, '\\${new String.fromCharCode(unicode)}', b);
       } else {
-	return new Literal.hex(unicode, backwards);
+        return new Literal.hex(unicode, b);
       }
-    }
-    if (unicode < 0x800) {
-      Ast part1 = new Literal.hex(0xc0 + (unicode >> 6), backwards);
-      Ast part2 = new Literal.hex(0x80 + (unicode & 0x3f), backwards);
-      if (backwards)
-        return new Alternative(part2, part1, backwards);
+    } else if (unicode < 0x800) {
+      Ast part1 = new Literal.hex(0xc0 + (unicode >> 6), b);
+      Ast part2 = new Literal.hex(0x80 + (unicode & 0x3f), b);
+      if (b)
+        return new Alternative(part2, part1, b);
       else
-        return new Alternative(part1, part2, backwards);
+        return new Alternative(part1, part2, b);
+    } else if (unicode < 0x10000) {
+      Ast part1 = new Literal.hex(0xe0 + (unicode >> 12), b);
+      Ast part2 = new Literal.hex(0x80 + ((unicode >> 6) & 0x3f), b);
+      Ast part3 = new Literal.hex(0x80 + (unicode & 0x3f), b);
+      if (b)
+        return new Alternative(new Alternative(part3, part2, b), part1, b);
+      else
+        return new Alternative(new Alternative(part1, part2, b), part3, b);
+    } else {
+      Ast part1 = new Literal.hex(0xf0 + (unicode >> 18), b);
+      Ast part2 = new Literal.hex(0x80 + ((unicode >> 12) & 0x3f), b);
+      Ast part3 = new Literal.hex(0x80 + ((unicode >> 6) & 0x3f), b);
+      Ast part4 = new Literal.hex(0x80 + (unicode & 0x3f), b);
+      if (b)
+        return new Alternative(new Alternative(new Alternative(part4, part3, b), part2, b), part1, b);
+      else
+        return new Alternative(new Alternative(new Alternative(part1, part2, b), part3, b), part4, b);
     }
-    Ast part1 = new Literal.hex(0xe0 + (unicode >> 12), backwards);
-    Ast part2 = new Literal.hex(0x80 + ((unicode >> 6) & 0x3f), backwards);
-    Ast part3 = new Literal.hex(0x80 + (unicode & 0x3f), backwards);
-    if (backwards)
-      return new Alternative(new Alternative(part3, part2, backwards), part1, backwards);
-    else
-      return new Alternative(new Alternative(part1, part2, backwards), part3, backwards);
   }
 
   void _(State state, Object o) {
@@ -995,7 +1001,7 @@ class Parser {
   }
 
   void checkForNull() {
-    if (current.codeUnitAt(0) == 0) die("Can't allow null characters in a Grut regexp");
+    if (currentCodePoint == 0) die("Can't allow null characters in a Grut regexp");
   }
 
   Ast parse() {
@@ -1079,7 +1085,7 @@ class Parser {
       die("Literal { and } must be escaped in $mode mode");
     // TODO: Should we (unlike Dart and JS) disallow a bare ']' here?
     checkForNull();
-    Ast ast = new Ast.literalString(current, backwards);
+    Ast ast = new Ast.literalCode(currentCodePoint, backwards);
     accept(current);
     return ast;
   }
@@ -1101,7 +1107,7 @@ class Parser {
         } else {
           checkEscape();
           checkForNull();
-          from = current.codeUnitAt(0);
+          from = currentCodePoint;
           accept(current);
         }
       } else if (accept("")) {
@@ -1109,7 +1115,7 @@ class Parser {
       } else {
         checkForNull();
         if (current == "-" && !allowLenient) die( "Literal dash must be escaped in character classes in $mode mode");
-        from = current.codeUnitAt(0);
+        from = currentCodePoint;
         accept(current);
       }
       if (!accept("-")) {
@@ -1131,14 +1137,14 @@ class Parser {
         } else {
           checkEscape();
           checkForNull();
-          to = current.codeUnitAt(0);
+          to = currentCodePoint;
           accept(current);
         }
       } else if (accept("")) {
         die("Unexpected end of regexp");
       } else {
         checkForNull();
-        to = current.codeUnitAt(0);
+        to = currentCodePoint;
         accept(current);
       }
       if (from > to) die("Invalid range");
@@ -1185,7 +1191,7 @@ class Parser {
       if (find_curly) digits = 6;
       int hex = 0;
       for (int digit = 0; digit < digits; digit++) {
-        int code = current.codeUnitAt(0);
+        int code = currentCodePoint;
         if (code >= zero && code <= zero + 9)
           hex = hex * 16 + code - zero;
         else if (code >= a && code <= a + 5)
@@ -1252,16 +1258,16 @@ class Parser {
   Ast acceptOctalEscape() {
     if (!isOctal(current)) return null;
     int zero = '0'.codeUnitAt(0);
-    int octal = current.codeUnitAt(0) - zero;
+    int octal = currentCodePoint - zero;
     accept(current);
 
     bool three_digits_possible = octal <= 3;  // Only allow 1 to 0377.
     if (!isOctal(current)) return escapeGate(octal);
-    octal = octal * 8 + current.codeUnitAt(0) - zero;
+    octal = octal * 8 + currentCodePoint - zero;
     accept(current);
 
     if (!three_digits_possible || !isOctal(current)) return escapeGate(octal);
-    octal = octal * 8 + current.codeUnitAt(0) - zero;
+    octal = octal * 8 + currentCodePoint - zero;
     accept(current);
     return escapeGate(octal);
   }
@@ -1312,7 +1318,7 @@ class Parser {
     if (esc != null) return esc;
     checkEscape();
     checkForNull();
-    Ast ast = new Ast.literalString(current, backwards);
+    Ast ast = new Ast.literalCode(currentCodePoint, backwards);
     accept(current);
     return ast;
   }
@@ -1320,12 +1326,12 @@ class Parser {
   void checkEscape() {
     if (accept("")) die("Unexpected end of regexp");
     if (mode != "js") {
-      if (current.codeUnitAt(0) >= 'a'.codeUnitAt(0) &&
-          current.codeUnitAt(0) <= 'z'.codeUnitAt(0)) die("Unsupported escape");
-      if (current.codeUnitAt(0) >= 'A'.codeUnitAt(0) &&
-          current.codeUnitAt(0) <= 'Z'.codeUnitAt(0)) die("Unsupported escape");
-      if (current.codeUnitAt(0) >= '0'.codeUnitAt(0) &&
-          current.codeUnitAt(0) <= '9'.codeUnitAt(0)) die("Unsupported escape");
+      if (currentCodePoint >= 'a'.codeUnitAt(0) &&
+          currentCodePoint <= 'z'.codeUnitAt(0)) die("Unsupported escape");
+      if (currentCodePoint >= 'A'.codeUnitAt(0) &&
+          currentCodePoint <= 'Z'.codeUnitAt(0)) die("Unsupported escape");
+      if (currentCodePoint >= '0'.codeUnitAt(0) &&
+          currentCodePoint <= '9'.codeUnitAt(0)) die("Unsupported escape");
     }
   }
 
@@ -1377,10 +1383,26 @@ class Parser {
   }
 
   void getToken() {
-    if (pos == src.length)
+    if (pos == src.length) {
       current = "";
-    else
+    } else {
       current = src[pos++];
+      int code = current.codeUnitAt(0);
+      if (code >= 0xd800 && code < 0xdc00 && pos < src.length) {
+        int code2 = src.codeUnitAt(pos);
+        if (code2 >= 0xdc00 && code2 < 0xe000) {
+          current += src[pos++];
+        }
+      }
+    }
+  }
+
+  int get currentCodePoint {
+    if (current.length == 1) return current.codeUnitAt(0);
+    if (current.length == 0) throw "Bug in parser: Hit end of input";
+    // UTF-16 surrogate pair.
+    int res = 0x10000 + ((current.codeUnitAt(0) & 0x3ff) << 10) + (current.codeUnitAt(1) & 0x3ff);
+    return res;
   }
 
   void expect(String token) {
@@ -1405,7 +1427,7 @@ class Parser {
     int ascii_zero = '0'.codeUnitAt(0);
     while (true) {
       if (current == "") return result;
-      int code = current.codeUnitAt(0) - ascii_zero;
+      int code = currentCodePoint - ascii_zero;
       if (code < 0 || code > 9) return result;
       result = result == null ? code : result * 10 + code;
       getToken();
